@@ -5,6 +5,7 @@ use crate::schema::schema_sql;
 use crate::stats::{ComparisonPoint, PeriodAverage, compare_weights, comparison_range};
 use crate::supabase::SupabaseClient;
 use crate::validation::{parse_date, parse_or_today, validate_weight};
+use ansi_term::ANSIString;
 use ansi_term::Colour::{Green, Red, Yellow};
 use ansi_term::Style;
 use clap::Parser;
@@ -134,10 +135,10 @@ fn print_comparison(
     println!("{}", "-".repeat(98));
 
     for point in points {
-        let delta = format_delta(point.delta_from_recent_kg);
-        let status = format_status(point.delta_from_recent_kg);
+        let delta = paint_delta(point.delta_from_recent_kg);
+        let status = paint_status(point.delta_from_recent_kg);
         println!(
-            "{:<14} {:<10} {:>10} {:>10} {:>8}  {:<10} {} to {}",
+            "{:<14} {:<10} {:>10} {} {:>8}  {} {} to {}",
             point.label,
             point.target_date,
             format_average(point.average_kg),
@@ -156,20 +157,39 @@ fn format_average(value: Option<f64>) -> String {
         .unwrap_or_else(|| "no data".to_string())
 }
 
-fn format_delta(value: Option<f64>) -> String {
+fn paint_delta(value: Option<f64>) -> ANSIString<'static> {
+    let text = format!("{:>10}", format_delta(value));
+
     match value {
-        Some(delta) if delta < -0.05 => Green.paint(format!("{delta:+.2} kg")).to_string(),
-        Some(delta) if delta > 0.05 => Red.paint(format!("{delta:+.2} kg")).to_string(),
-        Some(delta) => Yellow.paint(format!("{delta:+.2} kg")).to_string(),
-        None => "n/a".to_string(),
+        Some(delta) if delta < -0.05 => Green.paint(text),
+        Some(delta) if delta > 0.05 => Red.paint(text),
+        Some(_) => Yellow.paint(text),
+        None => Style::new().paint(text),
     }
 }
 
-fn format_status(value: Option<f64>) -> String {
+fn format_delta(value: Option<f64>) -> String {
+    value
+        .map(|delta| format!("{delta:+.2} kg"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn paint_status(value: Option<f64>) -> ANSIString<'static> {
+    let text = format!("{:<10}", format_status(value));
+
     match value {
-        Some(delta) if delta < -0.05 => Green.paint("lower").to_string(),
-        Some(delta) if delta > 0.05 => Red.paint("higher").to_string(),
-        Some(_) => Yellow.paint("steady").to_string(),
-        None => "missing".to_string(),
+        Some(delta) if delta < -0.05 => Green.paint(text),
+        Some(delta) if delta > 0.05 => Red.paint(text),
+        Some(_) => Yellow.paint(text),
+        None => Style::new().paint(text),
+    }
+}
+
+fn format_status(value: Option<f64>) -> &'static str {
+    match value {
+        Some(delta) if delta < -0.05 => "lower",
+        Some(delta) if delta > 0.05 => "higher",
+        Some(_) => "steady",
+        None => "missing",
     }
 }
