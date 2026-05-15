@@ -41,10 +41,10 @@ pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> W
 
     let recent_value = recent_average.average_kg;
     let points = [
-        ("1 month ago", reference_date - Duration::days(30)),
+        ("1 month  ago", reference_date - Duration::days(30)),
         ("3 months ago", reference_date - Duration::days(90)),
         ("6 months ago", reference_date - Duration::days(183)),
-        ("1 year ago", reference_date - Duration::days(365)),
+        ("1 year   ago", reference_date - Duration::days(365)),
     ]
     .into_iter()
     .map(|(label, target_date)| {
