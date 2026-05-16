@@ -3,6 +3,10 @@ use chrono::{Duration, NaiveDate};
 
 const POINT_WINDOW_DAYS: i64 = 7;
 const RECENT_AVERAGE_DAYS: i64 = 28;
+const ADVICE_WINDOW_DAYS: i64 = 28;
+const ADVICE_ENDPOINT_DAYS: i64 = 7;
+const MIN_ADVICE_RECORDS: usize = 10;
+const MIN_ENDPOINT_RECORDS: usize = 3;
 
 #[derive(Debug)]
 pub struct WeightComparison {
@@ -30,8 +34,98 @@ pub struct ComparisonPoint {
     pub delta_from_recent_kg: Option<f64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DietGoal {
+    Cut,
+    Maintain,
+    Gain,
+}
+
+impl DietGoal {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cut => "fat loss",
+            Self::Maintain => "maintenance",
+            Self::Gain => "weight gain",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DietAdvice {
+    pub goal: DietGoal,
+    pub analysis: TrendAnalysis,
+    pub recommendation: Option<AdviceRecommendation>,
+    pub interpretation: &'static str,
+}
+
+#[derive(Debug)]
+pub struct TrendAnalysis {
+    pub reference_date: NaiveDate,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub total_records: usize,
+    pub data_status: DataStatus,
+    pub short_term_average: PeriodAverage,
+    pub trend_kg_per_week: Option<f64>,
+    pub trend_class: Option<TrendClass>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataStatus {
+    NoData,
+    Insufficient,
+    Sufficient,
+}
+
+impl DataStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NoData => "no data",
+            Self::Insufficient => "insufficient",
+            Self::Sufficient => "sufficient",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrendClass {
+    LosingFast,
+    LosingModerate,
+    Stable,
+    GainingModerate,
+    GainingFast,
+}
+
+impl TrendClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LosingFast => "losing fast",
+            Self::LosingModerate => "losing moderately",
+            Self::Stable => "stable",
+            Self::GainingModerate => "gaining moderately",
+            Self::GainingFast => "gaining fast",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct AdviceRecommendation {
+    pub direction: &'static str,
+    pub intensity: &'static str,
+    pub action: &'static str,
+    pub caution: bool,
+}
+
 pub fn comparison_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
     (reference_date - Duration::days(372), reference_date)
+}
+
+pub fn advice_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    (
+        reference_date - Duration::days(ADVICE_WINDOW_DAYS - 1),
+        reference_date,
+    )
 }
 
 pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> WeightComparison {
@@ -71,6 +165,194 @@ pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> W
     WeightComparison {
         recent_average,
         points,
+    }
+}
+
+pub fn build_diet_advice(
+    records: &[WeightRecord],
+    reference_date: NaiveDate,
+    goal: DietGoal,
+) -> DietAdvice {
+    let analysis = analyze_trend(records, reference_date);
+    let (interpretation, recommendation) = match analysis.trend_class {
+        Some(trend_class) if analysis.data_status == DataStatus::Sufficient => {
+            advice_for(goal, trend_class)
+        }
+        _ => (
+            "Recent records are not enough to support a diet adjustment.",
+            None,
+        ),
+    };
+
+    DietAdvice {
+        goal,
+        analysis,
+        recommendation,
+        interpretation,
+    }
+}
+
+pub fn analyze_trend(records: &[WeightRecord], reference_date: NaiveDate) -> TrendAnalysis {
+    let (start, end) = advice_range(reference_date);
+    let total_records = count_between(records, start, end);
+    let recent_start = end - Duration::days(ADVICE_ENDPOINT_DAYS - 1);
+    let short_term_average = period_average("recent 7 days", recent_start, end, records);
+    let first_end = start + Duration::days(ADVICE_ENDPOINT_DAYS - 1);
+    let last_start = end - Duration::days(ADVICE_ENDPOINT_DAYS - 1);
+    let first_average = average_between(records, start, first_end);
+    let last_average = average_between(records, last_start, end);
+    let first_count = count_between(records, start, first_end);
+    let last_count = count_between(records, last_start, end);
+    let data_status = if total_records == 0 {
+        DataStatus::NoData
+    } else if total_records < MIN_ADVICE_RECORDS
+        || first_count < MIN_ENDPOINT_RECORDS
+        || last_count < MIN_ENDPOINT_RECORDS
+    {
+        DataStatus::Insufficient
+    } else {
+        DataStatus::Sufficient
+    };
+
+    let trend_kg_per_week = if data_status == DataStatus::Sufficient {
+        first_average
+            .zip(last_average)
+            .map(|(first, last)| (last - first) / 3.0)
+    } else {
+        None
+    };
+    let trend_class = trend_kg_per_week.map(classify_trend);
+
+    TrendAnalysis {
+        reference_date,
+        start,
+        end,
+        total_records,
+        data_status,
+        short_term_average,
+        trend_kg_per_week,
+        trend_class,
+    }
+}
+
+fn classify_trend(kg_per_week: f64) -> TrendClass {
+    if kg_per_week <= -0.9 {
+        TrendClass::LosingFast
+    } else if kg_per_week < -0.2 {
+        TrendClass::LosingModerate
+    } else if kg_per_week <= 0.2 {
+        TrendClass::Stable
+    } else if kg_per_week < 0.7 {
+        TrendClass::GainingModerate
+    } else {
+        TrendClass::GainingFast
+    }
+}
+
+fn advice_for(
+    goal: DietGoal,
+    trend_class: TrendClass,
+) -> (&'static str, Option<AdviceRecommendation>) {
+    match (goal, trend_class) {
+        (_, TrendClass::LosingFast) => (
+            "Weight is dropping quickly; prioritize caution before adding more restriction.",
+            Some(AdviceRecommendation {
+                direction: "increase or ease restriction",
+                intensity: "cautious",
+                action: "Add a small amount of regular food or reduce restriction, then observe for two weeks.",
+                caution: true,
+            }),
+        ),
+        (_, TrendClass::GainingFast) => (
+            "Weight is rising quickly; treat this as a high-intensity signal and make only conservative changes.",
+            Some(AdviceRecommendation {
+                direction: "tighten intake carefully",
+                intensity: "cautious",
+                action: "Start with lower-risk changes such as reducing sweet drinks, late snacks, or oversized portions.",
+                caution: true,
+            }),
+        ),
+        (DietGoal::Cut, TrendClass::LosingModerate) => (
+            "The current trend supports a fat loss goal.",
+            Some(AdviceRecommendation {
+                direction: "keep current diet direction",
+                intensity: "steady",
+                action: "Keep the current structure and avoid adding extra restriction while the trend is working.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Cut, TrendClass::Stable) => (
+            "Weight is stable while the goal is fat loss.",
+            Some(AdviceRecommendation {
+                direction: "slightly reduce intake",
+                intensity: "light",
+                action: "Make one small change, such as reducing snacks, sweet drinks, or a small portion of staple foods.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Cut, TrendClass::GainingModerate) => (
+            "Weight is trending up while the goal is fat loss.",
+            Some(AdviceRecommendation {
+                direction: "reduce intake",
+                intensity: "moderate",
+                action: "Tighten one or two repeatable habits, then reassess after two weeks of records.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Maintain, TrendClass::LosingModerate) => (
+            "Weight is trending down while the goal is maintenance.",
+            Some(AdviceRecommendation {
+                direction: "slightly increase intake",
+                intensity: "light",
+                action: "Add a small consistent portion to regular meals and keep tracking the trend.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Maintain, TrendClass::Stable) => (
+            "The current trend supports a maintenance goal.",
+            Some(AdviceRecommendation {
+                direction: "keep current diet direction",
+                intensity: "steady",
+                action: "Keep the current routine and continue monitoring weekly movement.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Maintain, TrendClass::GainingModerate) => (
+            "Weight is trending up while the goal is maintenance.",
+            Some(AdviceRecommendation {
+                direction: "slightly reduce intake",
+                intensity: "light",
+                action: "Trim one repeatable source of extra intake and reassess after two weeks.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Gain, TrendClass::LosingModerate) => (
+            "Weight is trending down while the goal is weight gain.",
+            Some(AdviceRecommendation {
+                direction: "increase intake",
+                intensity: "moderate",
+                action: "Add a consistent extra portion around meals or training days, then reassess the trend.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Gain, TrendClass::Stable) => (
+            "Weight is stable while the goal is weight gain.",
+            Some(AdviceRecommendation {
+                direction: "slightly increase intake",
+                intensity: "light",
+                action: "Add one small repeatable portion each day and keep tracking.",
+                caution: false,
+            }),
+        ),
+        (DietGoal::Gain, TrendClass::GainingModerate) => (
+            "The current trend supports a weight gain goal.",
+            Some(AdviceRecommendation {
+                direction: "keep current diet direction",
+                intensity: "steady",
+                action: "Keep the current structure and monitor that the rate does not accelerate.",
+                caution: false,
+            }),
+        ),
     }
 }
 
@@ -149,6 +431,89 @@ mod tests {
         assert_eq!(
             comparison_range(reference_date),
             (NaiveDate::from_ymd_opt(2025, 5, 7).unwrap(), reference_date)
+        );
+    }
+
+    #[test]
+    fn calculates_smoothed_medium_term_trend() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        let records = vec![
+            record("2026-05-01", 80.0),
+            record("2026-05-02", 80.2),
+            record("2026-05-03", 80.1),
+            record("2026-05-04", 80.0),
+            record("2026-05-12", 79.0),
+            record("2026-05-13", 78.9),
+            record("2026-05-14", 79.1),
+            record("2026-05-22", 78.5),
+            record("2026-05-23", 78.6),
+            record("2026-05-24", 78.5),
+            record("2026-05-25", 78.6),
+        ];
+
+        let analysis = analyze_trend(&records, reference_date);
+
+        assert_eq!(analysis.data_status, DataStatus::Sufficient);
+        assert_eq!(analysis.trend_class, Some(TrendClass::LosingModerate));
+        assert_eq!(analysis.short_term_average.sample_count, 4);
+        assert!(
+            (analysis.trend_kg_per_week.unwrap() - -0.5).abs() < 0.05,
+            "expected about -0.5 kg/week"
+        );
+    }
+
+    #[test]
+    fn marks_sparse_trend_data_as_insufficient() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        let records = vec![
+            record("2026-05-01", 80.0),
+            record("2026-05-14", 79.0),
+            record("2026-05-28", 78.0),
+        ];
+
+        let analysis = analyze_trend(&records, reference_date);
+
+        assert_eq!(analysis.data_status, DataStatus::Insufficient);
+        assert_eq!(analysis.trend_kg_per_week, None);
+        assert_eq!(analysis.trend_class, None);
+    }
+
+    #[test]
+    fn suppresses_advice_when_data_is_insufficient() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        let records = vec![record("2026-05-28", 78.0)];
+
+        let advice = build_diet_advice(&records, reference_date, DietGoal::Cut);
+
+        assert_eq!(advice.analysis.data_status, DataStatus::Insufficient);
+        assert_eq!(advice.recommendation, None);
+    }
+
+    #[test]
+    fn maps_goal_specific_advice_rules() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        let records = vec![
+            record("2026-05-01", 80.0),
+            record("2026-05-02", 80.1),
+            record("2026-05-03", 80.0),
+            record("2026-05-04", 80.2),
+            record("2026-05-12", 80.6),
+            record("2026-05-13", 80.8),
+            record("2026-05-14", 80.7),
+            record("2026-05-22", 81.2),
+            record("2026-05-23", 81.3),
+            record("2026-05-24", 81.2),
+            record("2026-05-25", 81.4),
+        ];
+
+        let cut = build_diet_advice(&records, reference_date, DietGoal::Cut);
+        let gain = build_diet_advice(&records, reference_date, DietGoal::Gain);
+
+        assert_eq!(cut.analysis.trend_class, Some(TrendClass::GainingModerate));
+        assert_eq!(cut.recommendation.unwrap().direction, "reduce intake");
+        assert_eq!(
+            gain.recommendation.unwrap().direction,
+            "keep current diet direction"
         );
     }
 }

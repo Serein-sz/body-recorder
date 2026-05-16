@@ -1,8 +1,11 @@
-use crate::cli::{Cli, Commands};
+use crate::cli::{AdviceGoal, Cli, Commands};
 use crate::config::init_config;
 use crate::error::AppResult;
 use crate::schema::schema_sql;
-use crate::stats::{ComparisonPoint, PeriodAverage, compare_weights, comparison_range};
+use crate::stats::{
+    AdviceRecommendation, ComparisonPoint, DataStatus, DietAdvice, DietGoal, PeriodAverage,
+    TrendAnalysis, build_diet_advice, compare_weights, comparison_range,
+};
 use crate::supabase::SupabaseClient;
 use crate::validation::{parse_date, parse_or_today, validate_weight};
 use ansi_term::ANSIString;
@@ -28,6 +31,7 @@ pub async fn run() -> AppResult<()> {
         Commands::Update { date, weight_kg } => update_weight(date, weight_kg).await,
         Commands::Delete { date } => delete_weight(date).await,
         Commands::Compare { date } => compare(date).await,
+        Commands::Advice { goal, date } => advice(goal, date).await,
     }
 }
 
@@ -103,6 +107,19 @@ async fn compare(date: Option<String>) -> AppResult<()> {
     Ok(())
 }
 
+async fn advice(goal: Option<AdviceGoal>, date: Option<String>) -> AppResult<()> {
+    let reference_date = parse_or_today(date)?;
+    let (start, end) = crate::stats::advice_range(reference_date);
+    let client = SupabaseClient::from_config_file()?;
+    let records = client.list_weights_between(start, end).await?;
+    let goal = goal.unwrap_or(AdviceGoal::Cut);
+    let advice = build_diet_advice(&records, reference_date, goal.into());
+
+    print_advice(&advice);
+
+    Ok(())
+}
+
 fn print_comparison(
     reference_date: chrono::NaiveDate,
     total_records: usize,
@@ -151,10 +168,108 @@ fn print_comparison(
     }
 }
 
+fn print_advice(advice: &DietAdvice) {
+    let title = Style::new().bold().paint("Diet advice");
+    println!("{title}");
+    println!(
+        "reference date: {}   goal: {}   records loaded: {}",
+        advice.analysis.reference_date,
+        advice.goal.label(),
+        advice.analysis.total_records
+    );
+    println!();
+
+    print_trend_summary(&advice.analysis);
+    println!();
+
+    println!("{}", Style::new().bold().paint("Interpretation"));
+    println!("{}", advice.interpretation);
+    println!();
+
+    println!("{}", Style::new().bold().paint("Diet adjustment"));
+    match &advice.recommendation {
+        Some(recommendation) => print_recommendation(recommendation),
+        None => {
+            println!("direction: no adjustment recommendation");
+            match advice.analysis.data_status {
+                DataStatus::NoData => {
+                    println!("reason: no usable recent records were found");
+                }
+                DataStatus::Insufficient => {
+                    println!(
+                        "reason: record at least 10 weights across the 28-day window, including several near the start and end"
+                    );
+                }
+                DataStatus::Sufficient => {
+                    println!("reason: trend signal is unavailable");
+                }
+            }
+        }
+    }
+    println!("note: this is trend-based guidance, not medical advice.");
+}
+
+fn print_trend_summary(analysis: &TrendAnalysis) {
+    println!("{}", Style::new().bold().paint("Trend"));
+    println!(
+        "{:<16} {} to {}",
+        "analysis range", analysis.start, analysis.end
+    );
+    println!(
+        "{:<16} {}",
+        "data status",
+        paint_data_status(analysis.data_status)
+    );
+    println!(
+        "{:<16} {}",
+        "28-day trend",
+        format_trend(analysis.trend_kg_per_week)
+    );
+    println!(
+        "{:<16} {}",
+        "trend class",
+        analysis
+            .trend_class
+            .map(|class| class.label().to_string())
+            .unwrap_or_else(|| "n/a".to_string())
+    );
+    println!(
+        "{:<16} {} from {} record(s)",
+        "7-day average",
+        format_average(analysis.short_term_average.average_kg),
+        analysis.short_term_average.sample_count
+    );
+}
+
+fn print_recommendation(recommendation: &AdviceRecommendation) {
+    println!("direction: {}", recommendation.direction);
+    println!("intensity: {}", recommendation.intensity);
+    println!("action: {}", recommendation.action);
+    if recommendation.caution {
+        println!("caution: change slowly and reassess after two weeks of records");
+    }
+}
+
 fn format_average(value: Option<f64>) -> String {
     value
         .map(|average| format!("{average:.2} kg"))
         .unwrap_or_else(|| "no data".to_string())
+}
+
+fn format_trend(value: Option<f64>) -> String {
+    value
+        .map(|trend| format!("{trend:+.2} kg/week"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn paint_data_status(value: DataStatus) -> ANSIString<'static> {
+    let text = value.label().to_string();
+
+    match value {
+        DataStatus::Sufficient => Green.paint(text),
+        DataStatus::Insufficient => Yellow.paint(text),
+        DataStatus::NoData => Red.paint(text),
+    }
 }
 
 fn paint_delta(value: Option<f64>) -> ANSIString<'static> {
@@ -165,6 +280,16 @@ fn paint_delta(value: Option<f64>) -> ANSIString<'static> {
         Some(delta) if delta > 0.05 => Red.paint(text),
         Some(_) => Yellow.paint(text),
         None => Style::new().paint(text),
+    }
+}
+
+impl From<AdviceGoal> for DietGoal {
+    fn from(value: AdviceGoal) -> Self {
+        match value {
+            AdviceGoal::Cut => Self::Cut,
+            AdviceGoal::Maintain => Self::Maintain,
+            AdviceGoal::Gain => Self::Gain,
+        }
     }
 }
 

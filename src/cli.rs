@@ -38,6 +38,14 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Analyze recent weight trend and suggest a conservative diet adjustment.
+    Advice {
+        /// Goal to interpret the trend against. Defaults to cut.
+        goal: Option<AdviceGoal>,
+        /// Reference date for the advice. Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// Print the Supabase SQL schema for this tool.
     Schema {
         #[arg(long, value_enum, default_value_t = AccessModel::ServiceRole)]
@@ -51,4 +59,41 @@ pub enum AccessModel {
     ServiceRole,
     /// Allow the anon key to read and write all weight records.
     Anon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum AdviceGoal {
+    /// Lose body weight.
+    Cut,
+    /// Keep body weight stable.
+    Maintain,
+    /// Gain body weight.
+    Gain,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advice_goal_defaults_to_cut_when_omitted() {
+        let cli = Cli::try_parse_from(["br", "advice"]).unwrap();
+
+        match cli.command {
+            Commands::Advice { goal, .. } => {
+                assert_eq!(goal.unwrap_or(AdviceGoal::Cut), AdviceGoal::Cut)
+            }
+            _ => panic!("expected advice command"),
+        }
+    }
+
+    #[test]
+    fn advice_goal_accepts_explicit_goal() {
+        let cli = Cli::try_parse_from(["br", "advice", "maintain"]).unwrap();
+
+        match cli.command {
+            Commands::Advice { goal, .. } => assert_eq!(goal, Some(AdviceGoal::Maintain)),
+            _ => panic!("expected advice command"),
+        }
+    }
 }
