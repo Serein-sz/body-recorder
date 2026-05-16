@@ -1,12 +1,25 @@
 use crate::config::read_config;
 use crate::error::{AppError, AppResult};
-use crate::models::{Config, WeightPayload, WeightRecord, WeightUpdatePayload};
+use crate::models::{Config, WeightRecord};
+use crate::repository::WeightRepository;
+use async_trait::async_trait;
 use chrono::NaiveDate;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use reqwest::{Client, Method, Url};
 use serde::{Deserialize, Serialize};
 
 const TABLE: &str = "weight_records";
+
+#[derive(Debug, Serialize)]
+struct WeightPayload {
+    record_date: NaiveDate,
+    weight_kg: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct WeightUpdatePayload {
+    weight_kg: f64,
+}
 
 pub struct SupabaseClient {
     http: Client,
@@ -156,6 +169,41 @@ impl SupabaseClient {
 
         let response = request.send().await?;
         parse_response(response).await
+    }
+}
+
+#[async_trait]
+impl WeightRepository for SupabaseClient {
+    async fn upsert_weight(
+        &self,
+        record_date: NaiveDate,
+        weight_kg: f64,
+    ) -> AppResult<WeightRecord> {
+        SupabaseClient::upsert_weight(self, record_date, weight_kg).await
+    }
+
+    async fn list_weights(&self, limit: u32) -> AppResult<Vec<WeightRecord>> {
+        SupabaseClient::list_weights(self, limit).await
+    }
+
+    async fn list_weights_between(
+        &self,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> AppResult<Vec<WeightRecord>> {
+        SupabaseClient::list_weights_between(self, start, end).await
+    }
+
+    async fn update_weight(
+        &self,
+        record_date: NaiveDate,
+        weight_kg: f64,
+    ) -> AppResult<Vec<WeightRecord>> {
+        SupabaseClient::update_weight(self, record_date, weight_kg).await
+    }
+
+    async fn delete_weight(&self, record_date: NaiveDate) -> AppResult<Vec<WeightRecord>> {
+        SupabaseClient::delete_weight(self, record_date).await
     }
 }
 
