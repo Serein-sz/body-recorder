@@ -1,5 +1,8 @@
 use super::{AnalysisView, App, InputField, LoadState, Mode, OperationStatus};
-use crate::stats::{AdviceRecommendation, ComparisonPoint, PeriodAverage};
+use crate::stats::{
+    AdviceRecommendation, ComparisonPoint, ComparisonValueSource, DataStatus, PeriodAverage,
+    TrendClass,
+};
 use crate::tui::app::advice_goal_label;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -43,29 +46,23 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
         Mode::Editing(_) => "edit",
         Mode::ConfirmDelete => "delete",
     };
-    let text = format!(
-        "Body Recorder   records: {}   selected: {}   mode: {}   views: {}",
-        app.records.len(),
-        if app.records.is_empty() {
-            "-".to_string()
-        } else {
-            (app.selected + 1).to_string()
-        },
-        mode,
-        view_tabs(app.active_view)
+    frame.render_widget(
+        Paragraph::new(header_line(app, mode)).block(panel("br tui")),
+        area,
     );
-    frame.render_widget(Paragraph::new(text).block(panel("br tui")), area);
 }
 
 fn render_records(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     let lines = match &app.status {
         OperationStatus::Loading if app.records.is_empty() => {
-            vec![Line::from("loading records...")]
+            vec![Line::styled("loading records...", loading_style())]
         }
         OperationStatus::Error(message) if app.records.is_empty() => {
-            vec![Line::from(format!("error: {message}"))]
+            vec![Line::styled(format!("error: {message}"), error_style())]
         }
-        _ if app.records.is_empty() => vec![Line::from("no weight records found")],
+        _ if app.records.is_empty() => {
+            vec![Line::styled("no weight records found", unavailable_style())]
+        }
         _ => app
             .records
             .iter()
@@ -73,9 +70,7 @@ fn render_records(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect)
             .map(|(index, record)| {
                 let marker = if index == app.selected { ">" } else { " " };
                 let style = if index == app.selected {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
+                    selected_row_style()
                 } else {
                     Style::default()
                 };
@@ -120,9 +115,17 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
 
 fn compare_lines(app: &App) -> Vec<Line<'static>> {
     match &app.compare {
-        LoadState::NotLoaded => vec![Line::from("Press ] to open Compare or r to load it.")],
-        LoadState::Loading => vec![Line::from("loading compare analysis...")],
-        LoadState::Error(message) => vec![Line::from(format!("compare error: {message}"))],
+        LoadState::NotLoaded => vec![Line::styled(
+            "Press Tab to open Compare or r to load it.",
+            unavailable_style(),
+        )],
+        LoadState::Loading => vec![Line::styled("loading compare analysis...", loading_style())],
+        LoadState::Error(message) => {
+            vec![Line::styled(
+                format!("compare error: {message}"),
+                error_style(),
+            )]
+        }
         LoadState::Ready(result) => {
             let mut lines = vec![
                 Line::from(format!(
@@ -136,7 +139,10 @@ fn compare_lines(app: &App) -> Vec<Line<'static>> {
                     result.comparison.recent_average.sample_count
                 )),
                 Line::from(""),
-                Line::from("period        average      delta       source"),
+                Line::styled(
+                    "period        average      delta       source",
+                    title_style(),
+                ),
             ];
             lines.extend(result.comparison.points.iter().map(compare_point_line));
             lines
@@ -145,50 +151,61 @@ fn compare_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn compare_point_line(point: &ComparisonPoint) -> Line<'static> {
-    Line::from(format!(
-        "{:<13} {:<12} {:<11} {}",
-        point.label,
-        format_optional_kg(point.average_kg),
-        format_delta(point.delta_from_recent_kg),
-        point.value_source.label()
-    ))
+    Line::from(vec![
+        Span::raw(format!("{:<13} ", point.label)),
+        Span::styled(
+            format!("{:<12} ", format_optional_kg(point.average_kg)),
+            optional_value_style(point.average_kg),
+        ),
+        Span::styled(
+            format!("{:<11} ", format_delta(point.delta_from_recent_kg)),
+            delta_style(point.delta_from_recent_kg),
+        ),
+        Span::styled(point.value_source.label(), source_style(point.value_source)),
+    ])
 }
 
 fn advice_lines(app: &App) -> Vec<Line<'static>> {
     match &app.advice {
-        LoadState::NotLoaded => vec![Line::from("Press ] to open Advice or r to load it.")],
-        LoadState::Loading => vec![Line::from("loading advice analysis...")],
-        LoadState::Error(message) => vec![Line::from(format!("advice error: {message}"))],
+        LoadState::NotLoaded => vec![Line::styled(
+            "Press Tab to open Advice or r to load it.",
+            unavailable_style(),
+        )],
+        LoadState::Loading => vec![Line::styled("loading advice analysis...", loading_style())],
+        LoadState::Error(message) => {
+            vec![Line::styled(
+                format!("advice error: {message}"),
+                error_style(),
+            )]
+        }
         LoadState::Ready(result) => {
             let advice = &result.advice;
             let analysis = &advice.analysis;
             let mut lines = vec![
-                Line::from(format!(
-                    "goal: {}   data: {}",
-                    advice_goal_label(app.advice_goal),
-                    analysis.data_status.label()
-                )),
-                Line::from(format!(
-                    "trend: {}   class: {}",
-                    analysis
-                        .trend_kg_per_week
-                        .map(|value| format!("{value:+.2} kg/week"))
-                        .unwrap_or_else(|| "n/a".to_string()),
-                    analysis
-                        .trend_class
-                        .map(|class| class.label().to_string())
-                        .unwrap_or_else(|| "n/a".to_string())
-                )),
+                Line::from(vec![
+                    Span::raw(format!(
+                        "goal: {}   data: ",
+                        advice_goal_label(app.advice_goal)
+                    )),
+                    Span::styled(
+                        analysis.data_status.label(),
+                        data_status_style(analysis.data_status),
+                    ),
+                ]),
+                trend_line(analysis.trend_kg_per_week, analysis.trend_class),
                 Line::from(""),
-                Line::from("Interpretation"),
+                Line::styled("Interpretation", title_style()),
                 Line::from(advice.interpretation.to_string()),
                 Line::from(""),
-                Line::from("Diet adjustment"),
+                Line::styled("Diet adjustment", title_style()),
             ];
 
             match &advice.recommendation {
                 Some(recommendation) => lines.extend(recommendation_lines(recommendation)),
-                None => lines.push(Line::from("no adjustment recommendation")),
+                None => lines.push(Line::styled(
+                    "no adjustment recommendation",
+                    unavailable_style(),
+                )),
             }
 
             lines
@@ -199,23 +216,25 @@ fn advice_lines(app: &App) -> Vec<Line<'static>> {
 fn recommendation_lines(recommendation: &AdviceRecommendation) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(format!("direction: {}", recommendation.direction)),
-        Line::from(format!("intensity: {}", recommendation.intensity)),
+        Line::from(vec![
+            Span::raw("intensity: "),
+            Span::styled(
+                recommendation.intensity,
+                recommendation_intensity_style(recommendation.intensity),
+            ),
+        ]),
         Line::from(format!("action: {}", recommendation.action)),
     ];
     if recommendation.caution {
-        lines.push(Line::from("caution: change slowly and reassess"));
+        lines.push(Line::styled(
+            "caution: change slowly and reassess",
+            caution_style(),
+        ));
     }
     lines
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
-    let status = match &app.status {
-        OperationStatus::Idle => "ready".to_string(),
-        OperationStatus::Loading => "loading records...".to_string(),
-        OperationStatus::Saving(message) => (*message).to_string(),
-        OperationStatus::Error(message) => format!("error: {message}"),
-        OperationStatus::Message(message) => message.clone(),
-    };
     let help = match &app.mode {
         Mode::Normal if app.active_view == AnalysisView::Advice => {
             "[tab] view  [g] goal  [r] refresh  [a/e/d] records  [q] quit"
@@ -226,7 +245,11 @@ fn render_status(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
     };
 
     frame.render_widget(
-        Paragraph::new(vec![Line::from(status), Line::from(help)]).block(panel("Status")),
+        Paragraph::new(vec![
+            status_line(&app.status),
+            Line::styled(help, inactive_style()),
+        ])
+        .block(panel("Status")),
         area,
     );
 }
@@ -305,25 +328,185 @@ fn panel(title: &str) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(title)
+        .border_style(border_style())
+        .title(Span::styled(title.to_string(), title_style()))
 }
 
-fn view_tabs(active: AnalysisView) -> String {
+fn header_line(app: &App, mode: &str) -> Line<'static> {
+    let selected = if app.records.is_empty() {
+        "-".to_string()
+    } else {
+        (app.selected + 1).to_string()
+    };
+    let mut spans = vec![Span::raw(format!(
+        "Body Recorder   records: {}   selected: {}   mode: {}   views: ",
+        app.records.len(),
+        selected,
+        mode
+    ))];
+    spans.extend(view_tab_spans(app.active_view));
+    Line::from(spans)
+}
+
+fn view_tab_spans(active: AnalysisView) -> Vec<Span<'static>> {
     [
         AnalysisView::Summary,
         AnalysisView::Compare,
         AnalysisView::Advice,
     ]
     .into_iter()
-    .map(|view| {
-        if view == active {
-            format!("[{}]", view.label())
-        } else {
-            view.label().to_string()
+    .enumerate()
+    .flat_map(|(index, view)| {
+        let mut spans = Vec::new();
+        if index > 0 {
+            spans.push(Span::raw(" "));
         }
+        if view == active {
+            spans.push(Span::styled(
+                format!("[{}]", view.label()),
+                active_tab_style(),
+            ));
+        } else {
+            spans.push(Span::styled(view.label().to_string(), inactive_style()));
+        }
+        spans
     })
-    .collect::<Vec<_>>()
-    .join(" ")
+    .collect()
+}
+
+fn trend_line(value: Option<f64>, class: Option<TrendClass>) -> Line<'static> {
+    let trend = value
+        .map(|value| format!("{value:+.2} kg/week"))
+        .unwrap_or_else(|| "n/a".to_string());
+    let class_label = class
+        .map(|class| class.label().to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+
+    Line::from(vec![
+        Span::raw("trend: "),
+        Span::styled(trend, optional_value_style(value)),
+        Span::raw("   class: "),
+        Span::styled(class_label, trend_class_style(class)),
+    ])
+}
+
+fn status_line(status: &OperationStatus) -> Line<'static> {
+    match status {
+        OperationStatus::Idle => Line::styled("ready", message_style()),
+        OperationStatus::Loading => Line::styled("loading records...", loading_style()),
+        OperationStatus::Saving(message) => Line::styled(*message, loading_style()),
+        OperationStatus::Error(message) => Line::styled(format!("error: {message}"), error_style()),
+        OperationStatus::Message(message) => Line::styled(message.clone(), message_style()),
+    }
+}
+
+fn border_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+fn title_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn active_tab_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn selected_row_style() -> Style {
+    active_tab_style()
+}
+
+fn inactive_style() -> Style {
+    Style::default().fg(Color::Gray)
+}
+
+fn loading_style() -> Style {
+    Style::default().fg(Color::Yellow)
+}
+
+fn message_style() -> Style {
+    Style::default().fg(Color::Green)
+}
+
+fn error_style() -> Style {
+    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+}
+
+fn unavailable_style() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+fn caution_style() -> Style {
+    Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn favorable_style() -> Style {
+    Style::default().fg(Color::Green)
+}
+
+fn unfavorable_style() -> Style {
+    Style::default().fg(Color::Red)
+}
+
+fn neutral_style() -> Style {
+    Style::default().fg(Color::Yellow)
+}
+
+fn optional_value_style(value: Option<f64>) -> Style {
+    if value.is_some() {
+        Style::default()
+    } else {
+        unavailable_style()
+    }
+}
+
+fn delta_style(value: Option<f64>) -> Style {
+    match value {
+        Some(delta) if delta < -0.05 => favorable_style(),
+        Some(delta) if delta > 0.05 => unfavorable_style(),
+        Some(_) => neutral_style(),
+        None => unavailable_style(),
+    }
+}
+
+fn source_style(source: ComparisonValueSource) -> Style {
+    match source {
+        ComparisonValueSource::Direct => favorable_style(),
+        ComparisonValueSource::Filled => neutral_style(),
+        ComparisonValueSource::Missing => unavailable_style(),
+    }
+}
+
+fn data_status_style(status: DataStatus) -> Style {
+    match status {
+        DataStatus::Sufficient => favorable_style(),
+        DataStatus::Insufficient => caution_style(),
+        DataStatus::NoData => error_style(),
+    }
+}
+
+fn trend_class_style(class: Option<TrendClass>) -> Style {
+    match class {
+        Some(TrendClass::Stable) => favorable_style(),
+        Some(TrendClass::LosingFast | TrendClass::GainingFast) => caution_style(),
+        Some(TrendClass::LosingModerate | TrendClass::GainingModerate) => neutral_style(),
+        None => unavailable_style(),
+    }
+}
+
+fn recommendation_intensity_style(intensity: &str) -> Style {
+    match intensity {
+        "steady" => favorable_style(),
+        "light" => neutral_style(),
+        "moderate" | "cautious" => caution_style(),
+        _ => Style::default(),
+    }
 }
 
 fn format_average(period: &PeriodAverage) -> String {
@@ -477,6 +660,95 @@ mod tests {
         let output = render_to_text(&app, 120, 28);
 
         assert!(output.contains("Summary [Compare] Advice"));
+    }
+
+    #[test]
+    fn styles_panel_titles_and_active_tabs() {
+        assert_eq!(border_style().fg, Some(Color::DarkGray));
+        assert_eq!(title_style().fg, Some(Color::Cyan));
+        assert!(title_style().add_modifier.contains(Modifier::BOLD));
+
+        let spans = view_tab_spans(AnalysisView::Compare);
+        let compare = spans
+            .iter()
+            .find(|span| span.content.as_ref() == "[Compare]")
+            .unwrap();
+
+        assert_eq!(compare.style.fg, Some(Color::Cyan));
+        assert!(compare.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn styles_record_selection_and_operation_statuses() {
+        assert_eq!(selected_row_style().fg, Some(Color::Cyan));
+        assert!(selected_row_style().add_modifier.contains(Modifier::BOLD));
+
+        assert_eq!(
+            status_line(&OperationStatus::Loading).style.fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            status_line(&OperationStatus::Message("saved".to_string()))
+                .style
+                .fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            status_line(&OperationStatus::Error("failed".to_string()))
+                .style
+                .fg,
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn styles_compare_delta_and_source_semantics() {
+        assert_eq!(delta_style(Some(-0.5)).fg, Some(Color::Green));
+        assert_eq!(delta_style(Some(0.5)).fg, Some(Color::Red));
+        assert_eq!(delta_style(Some(0.0)).fg, Some(Color::Yellow));
+        assert_eq!(delta_style(None).fg, Some(Color::DarkGray));
+
+        assert_eq!(
+            source_style(crate::stats::ComparisonValueSource::Direct).fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            source_style(crate::stats::ComparisonValueSource::Filled).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            source_style(crate::stats::ComparisonValueSource::Missing).fg,
+            Some(Color::DarkGray)
+        );
+    }
+
+    #[test]
+    fn styles_advice_status_trend_and_recommendation_semantics() {
+        assert_eq!(
+            data_status_style(crate::stats::DataStatus::Sufficient).fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            data_status_style(crate::stats::DataStatus::Insufficient).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            trend_class_style(Some(crate::stats::TrendClass::Stable)).fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            trend_class_style(Some(crate::stats::TrendClass::GainingFast)).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            recommendation_intensity_style("steady").fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            recommendation_intensity_style("moderate").fg,
+            Some(Color::Yellow)
+        );
+        assert!(caution_style().add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
