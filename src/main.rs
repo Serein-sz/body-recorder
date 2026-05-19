@@ -8,6 +8,7 @@ mod repository;
 mod schema;
 mod stats;
 mod supabase;
+mod tui;
 mod use_cases;
 mod validation;
 

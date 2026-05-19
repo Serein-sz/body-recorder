@@ -51,6 +51,8 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = AccessModel::ServiceRole)]
         access: AccessModel,
     },
+    /// Open the interactive terminal interface.
+    Tui,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -95,5 +97,12 @@ mod tests {
             Commands::Advice { goal, .. } => assert_eq!(goal, Some(AdviceGoal::Maintain)),
             _ => panic!("expected advice command"),
         }
+    }
+
+    #[test]
+    fn accepts_tui_command() {
+        let cli = Cli::try_parse_from(["br", "tui"]).unwrap();
+
+        assert!(matches!(cli.command, Commands::Tui));
     }
 }

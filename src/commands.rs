@@ -4,6 +4,7 @@ use crate::error::AppResult;
 use crate::output;
 use crate::schema::schema_sql;
 use crate::supabase::SupabaseClient;
+use crate::tui;
 use crate::use_cases;
 use clap::Parser;
 
@@ -63,6 +64,10 @@ pub async fn run() -> AppResult<()> {
             let result = use_cases::advice(&repository, goal, date).await?;
             print!("{}", output::render_advice(&result.advice));
             Ok(())
+        }
+        Commands::Tui => {
+            let repository = SupabaseClient::from_config_file()?;
+            tui::run(&repository).await
         }
     }
 }
