@@ -7,87 +7,79 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30  # 全局超时
+    name: Build ${{ matrix.platform.os-name }}
+    runs-on: ${{ matrix.platform.runs-on }}
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
+        platform:
+          - os-name: Linux-x86_64
+            runs-on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            use_cross: false
             output_name: br-linux-amd64
-          - os: macos-latest
+
+          - os-name: Linux-aarch64
+            runs-on: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            output_name: br-linux-arm64
+
+          - os-name: Linux-x86_64-musl
+            runs-on: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            output_name: br-linux-amd64-musl
+
+          - os-name: macOS-x86_64
+            runs-on: macos-latest
             target: x86_64-apple-darwin
-            use_cross: false
             output_name: br-darwin-amd64
-          - os: macos-26
+
+          - os-name: macOS-aarch64
+            runs-on: macos-latest
             target: aarch64-apple-darwin
-            use_cross: false
             output_name: br-darwin-arm64
-          - os: windows-latest
+
+          - os-name: Windows-x86_64
+            runs-on: windows-latest
             target: x86_64-pc-windows-msvc
-            use_cross: false
             output_name: br-windows-amd64.exe
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Build binary
+        uses: houseabsolute/actions-rust-cross@v1
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Cache Cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build (native)
-        if: "!matrix.use_cross"
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build (cross)
-        if: matrix.use_cross
-        run: cross build --release --target ${{ matrix.target }}
+          command: build
+          target: ${{ matrix.platform.target }}
+          args: "--locked --release"
+          strip: true
 
       - name: Prepare binary
         shell: bash
         run: |
           mkdir -p bin
-          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
-            cp target/${{ matrix.target }}/release/br.exe bin/${{ matrix.output_name }}
-          else
-            cp target/${{ matrix.target }}/release/br bin/${{ matrix.output_name }}
-          fi
+          BINARY="target/${{ matrix.platform.target }}/release/br"
+          [[ "${{ matrix.platform.target }}" == *"windows"* ]] && BINARY="${BINARY}.exe"
+          cp "$BINARY" "bin/${{ matrix.platform.output_name }}"
 
-      - name: Strip binary (Linux/macOS)
-        if: ${{ !contains(matrix.target, 'windows') && !matrix.use_cross }}
-        run: strip bin/${{ matrix.output_name }}
-
-      - name: Compress (optional)
-        if: ${{ !contains(matrix.target, 'windows') }}
+      - name: Compress (non-Windows)
+        if: ${{ !contains(matrix.platform.target, 'windows') }}
+        shell: bash
         run: |
           cd bin
-          tar czf ${{ matrix.output_name }}.tar.gz ${{ matrix.output_name }}
+          tar czf "${{ matrix.platform.output_name }}.tar.gz" "${{ matrix.platform.output_name }}"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.output_name }}
-          path: bin/${{ matrix.output_name }}*
+          name: ${{ matrix.platform.os-name }}
+          path: bin/${{ matrix.platform.output_name }}*
 
   release:
     name: Create Release
@@ -101,63 +93,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
       - name: Display structure
-        run: ls -R artifacts/
-
-      - name: Prepare release files
-        run: |
-          mkdir -p release_files
-          find artifacts -type f \( -name "br-*" -o -name "*.tar.gz" \) -exec cp {} release_files/ \;
-          ls -la release_files/
+        run: ls -la artifacts/
 
       - name: Generate checksums
         run: |
-          cd release_files
+          cd artifacts
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          cd ..
 
       - name: Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: release_files/*
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          body: |
-            ## br ${{ github.ref_name }}
-
-            ### 安装
-
-            **Linux (amd64)**
-            ```bash
-            curl -L -o br https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/br-linux-amd64
-            chmod +x br
-            sudo mv br /usr/local/bin/
-            ```
-
-            **macOS (Intel)**
-            ```bash
-            curl -L -o br https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/br-darwin-amd64
-            chmod +x br
-            sudo mv br /usr/local/bin/
-            ```
-
-            **macOS (Apple Silicon)**
-            ```bash
-            curl -L -o br https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/br-darwin-arm64
-            chmod +x br
-            sudo mv br /usr/local/bin/
-            ```
-
-            **Windows**
-            下载 `br-windows-amd64.exe` 并重命名为 `br.exe`，添加到 PATH。
-
-            ### 校验
-            ```bash
-            sha256sum -c SHA256SUMS.txt
-            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd artifacts
+          gh release create "${{ github.ref_name }}" \
+            --title "br ${{ github.ref_name }}" \
+            --generate-notes \
+            --verify-tag \
+            *
