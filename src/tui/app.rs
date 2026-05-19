@@ -1,8 +1,9 @@
 use super::Action;
+use crate::cli::AdviceGoal;
 use crate::models::WeightRecord;
 use crate::repository::WeightRepository;
 use crate::stats::analyze_trend;
-use crate::use_cases;
+use crate::use_cases::{self, AdviceResult, CompareWeightsResult};
 use crate::validation::{parse_date, validate_weight};
 use chrono::{Local, NaiveDate};
 
@@ -38,6 +39,45 @@ pub(crate) enum Mode {
     ConfirmDelete,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnalysisView {
+    Summary,
+    Compare,
+    Advice,
+}
+
+impl AnalysisView {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Summary => "Summary",
+            Self::Compare => "Compare",
+            Self::Advice => "Advice",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Self::Summary => Self::Compare,
+            Self::Compare => Self::Advice,
+            Self::Advice => Self::Summary,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum LoadState<T> {
+    NotLoaded,
+    Loading,
+    Ready(T),
+    Error(String),
+}
+
+impl<T> LoadState<T> {
+    fn invalidate(&mut self) {
+        *self = Self::NotLoaded;
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct App {
     pub(crate) records: Vec<WeightRecord>,
@@ -46,6 +86,10 @@ pub(crate) struct App {
     pub(crate) mode: Mode,
     pub(crate) should_quit: bool,
     pub(crate) reference_date: NaiveDate,
+    pub(crate) active_view: AnalysisView,
+    pub(crate) compare: LoadState<CompareWeightsResult>,
+    pub(crate) advice: LoadState<AdviceResult>,
+    pub(crate) advice_goal: AdviceGoal,
 }
 
 impl App {
@@ -61,6 +105,10 @@ impl App {
             mode: Mode::Normal,
             should_quit: false,
             reference_date,
+            active_view: AnalysisView::Summary,
+            compare: LoadState::NotLoaded,
+            advice: LoadState::NotLoaded,
+            advice_goal: AdviceGoal::Cut,
         }
     }
 
@@ -89,6 +137,17 @@ impl App {
             Action::Quit => self.should_quit = true,
             Action::Refresh if matches!(self.mode, Mode::Normal) => {
                 self.refresh(repository).await;
+            }
+            Action::ToggleField if matches!(self.mode, Mode::Normal) => {
+                self.active_view = self.active_view.next();
+                self.load_active_analysis(repository).await;
+            }
+            Action::RotateAdviceGoal
+                if matches!(self.mode, Mode::Normal)
+                    && self.active_view == AnalysisView::Advice =>
+            {
+                self.advice_goal = next_advice_goal(self.advice_goal);
+                self.load_advice(repository).await;
             }
             Action::Add if matches!(self.mode, Mode::Normal) => self.start_add(),
             Action::Edit if matches!(self.mode, Mode::Normal) => self.start_edit(),
@@ -227,6 +286,14 @@ impl App {
     }
 
     async fn refresh(&mut self, repository: &impl WeightRepository) {
+        match self.active_view {
+            AnalysisView::Summary => self.refresh_records(repository).await,
+            AnalysisView::Compare => self.load_compare(repository).await,
+            AnalysisView::Advice => self.load_advice(repository).await,
+        }
+    }
+
+    async fn refresh_records(&mut self, repository: &impl WeightRepository) {
         self.status = OperationStatus::Loading;
         match use_cases::list_weights(repository, RECENT_LIMIT).await {
             Ok(result) => {
@@ -235,6 +302,47 @@ impl App {
                 self.status = OperationStatus::Message("refreshed records".to_string());
             }
             Err(error) => self.status = OperationStatus::Error(error.to_string()),
+        }
+    }
+
+    async fn load_active_analysis(&mut self, repository: &impl WeightRepository) {
+        match self.active_view {
+            AnalysisView::Summary => {}
+            AnalysisView::Compare if matches!(self.compare, LoadState::NotLoaded) => {
+                self.load_compare(repository).await;
+            }
+            AnalysisView::Advice if matches!(self.advice, LoadState::NotLoaded) => {
+                self.load_advice(repository).await;
+            }
+            AnalysisView::Compare | AnalysisView::Advice => {}
+        }
+    }
+
+    pub(crate) async fn load_compare(&mut self, repository: &impl WeightRepository) {
+        self.compare = LoadState::Loading;
+        match use_cases::compare(repository, Some(self.reference_date.to_string())).await {
+            Ok(result) => {
+                self.compare = LoadState::Ready(result);
+                self.status = OperationStatus::Message("loaded compare analysis".to_string());
+            }
+            Err(error) => self.compare = LoadState::Error(error.to_string()),
+        }
+    }
+
+    pub(crate) async fn load_advice(&mut self, repository: &impl WeightRepository) {
+        self.advice = LoadState::Loading;
+        match use_cases::advice(
+            repository,
+            Some(self.advice_goal),
+            Some(self.reference_date.to_string()),
+        )
+        .await
+        {
+            Ok(result) => {
+                self.advice = LoadState::Ready(result);
+                self.status = OperationStatus::Message("loaded advice analysis".to_string());
+            }
+            Err(error) => self.advice = LoadState::Error(error.to_string()),
         }
     }
 
@@ -257,6 +365,7 @@ impl App {
         match use_cases::add_weight(repository, weight, date).await {
             Ok(_) => {
                 self.mode = Mode::Normal;
+                self.invalidate_analysis();
                 self.refresh_after_write(repository, "saved record").await;
             }
             Err(error) => self.status = OperationStatus::Error(error.to_string()),
@@ -277,6 +386,7 @@ impl App {
         match use_cases::update_weight(repository, input.date, weight).await {
             Ok(_) => {
                 self.mode = Mode::Normal;
+                self.invalidate_analysis();
                 self.refresh_after_write(repository, "updated record").await;
             }
             Err(error) => self.status = OperationStatus::Error(error.to_string()),
@@ -294,6 +404,7 @@ impl App {
         match use_cases::delete_weight(repository, date).await {
             Ok(_) => {
                 self.mode = Mode::Normal;
+                self.invalidate_analysis();
                 self.refresh_after_write(repository, "deleted record").await;
             }
             Err(error) => self.status = OperationStatus::Error(error.to_string()),
@@ -315,12 +426,33 @@ impl App {
         self.records.get(self.selected)
     }
 
+    fn invalidate_analysis(&mut self) {
+        self.compare.invalidate();
+        self.advice.invalidate();
+    }
+
     fn clamp_selection(&mut self) {
         if self.records.is_empty() {
             self.selected = 0;
         } else if self.selected >= self.records.len() {
             self.selected = self.records.len() - 1;
         }
+    }
+}
+
+pub(crate) fn advice_goal_label(goal: AdviceGoal) -> &'static str {
+    match goal {
+        AdviceGoal::Cut => "fat loss",
+        AdviceGoal::Maintain => "maintenance",
+        AdviceGoal::Gain => "weight gain",
+    }
+}
+
+fn next_advice_goal(goal: AdviceGoal) -> AdviceGoal {
+    match goal {
+        AdviceGoal::Cut => AdviceGoal::Maintain,
+        AdviceGoal::Maintain => AdviceGoal::Gain,
+        AdviceGoal::Gain => AdviceGoal::Cut,
     }
 }
 
@@ -391,7 +523,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("between:{start}:{end}"));
-            Ok(Vec::new())
+            Ok(self
+                .records
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|record| record.record_date >= start && record.record_date <= end)
+                .cloned()
+                .collect())
         }
 
         async fn update_weight(
@@ -501,5 +640,101 @@ mod tests {
 
         assert_eq!(repository.calls(), ["delete:2026-05-19", "list:30"]);
         assert!(app.records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn switches_analysis_views_and_loads_compare_and_advice() {
+        let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::ToggleField, &repository).await;
+        assert_eq!(app.active_view, AnalysisView::Compare);
+        assert!(matches!(app.compare, LoadState::Ready(_)));
+
+        app.handle_action(Action::ToggleField, &repository).await;
+        assert_eq!(app.active_view, AnalysisView::Advice);
+        assert!(matches!(app.advice, LoadState::Ready(_)));
+        assert_eq!(
+            repository.calls(),
+            [
+                "between:2025-05-19:2026-05-19",
+                "between:2026-04-22:2026-05-19"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn analysis_view_controls_are_ignored_during_input_modes() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::Add, &repository).await;
+        app.handle_action(Action::ToggleField, &repository).await;
+        app.handle_action(Action::RotateAdviceGoal, &repository)
+            .await;
+
+        assert_eq!(app.active_view, AnalysisView::Summary);
+        assert_eq!(app.advice_goal, AdviceGoal::Cut);
+        match app.mode {
+            Mode::Adding(input) => assert_eq!(input.field, InputField::Date),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn advice_goal_rotates_and_reloads_only_in_advice_view() {
+        let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::RotateAdviceGoal, &repository)
+            .await;
+        assert_eq!(app.advice_goal, AdviceGoal::Cut);
+        assert!(repository.calls().is_empty());
+
+        app.active_view = AnalysisView::Advice;
+        app.handle_action(Action::RotateAdviceGoal, &repository)
+            .await;
+
+        assert_eq!(app.advice_goal, AdviceGoal::Maintain);
+        assert!(matches!(app.advice, LoadState::Ready(_)));
+        assert_eq!(repository.calls(), ["between:2026-04-22:2026-05-19"]);
+    }
+
+    #[tokio::test]
+    async fn refresh_uses_active_analysis_view() {
+        let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::Refresh, &repository).await;
+        app.active_view = AnalysisView::Compare;
+        app.handle_action(Action::Refresh, &repository).await;
+        app.active_view = AnalysisView::Advice;
+        app.handle_action(Action::Refresh, &repository).await;
+
+        assert_eq!(
+            repository.calls(),
+            [
+                "list:30",
+                "between:2025-05-19:2026-05-19",
+                "between:2026-04-22:2026-05-19"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn record_write_invalidates_loaded_analysis() {
+        let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.records = vec![record(date("2026-05-19"), 72.0)];
+        app.load_compare(&repository).await;
+        app.load_advice(&repository).await;
+
+        app.handle_action(Action::Edit, &repository).await;
+        app.handle_action(Action::Input('1'), &repository).await;
+        app.handle_action(Action::Confirm, &repository).await;
+
+        assert!(matches!(app.compare, LoadState::NotLoaded));
+        assert!(matches!(app.advice, LoadState::NotLoaded));
     }
 }

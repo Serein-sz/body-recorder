@@ -10,6 +10,7 @@ pub(crate) enum Action {
     Input(char),
     Quit,
     Refresh,
+    RotateAdviceGoal,
     ToggleField,
     Up,
 }

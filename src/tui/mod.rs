@@ -9,7 +9,7 @@ use crate::repository::WeightRepository;
 use std::time::Duration;
 
 pub(crate) use action::Action;
-pub(crate) use app::{App, InputField, Mode, OperationStatus};
+pub(crate) use app::{AnalysisView, App, InputField, LoadState, Mode, OperationStatus};
 
 pub async fn run(repository: &impl WeightRepository) -> AppResult<()> {
     let mut terminal = terminal::TerminalGuard::enter()?;

@@ -25,6 +25,7 @@ pub(crate) fn key_event_to_action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('a') => Some(Action::Add),
         KeyCode::Char('e') => Some(Action::Edit),
         KeyCode::Char('d') => Some(Action::Delete),
+        KeyCode::Char('g') => Some(Action::RotateAdviceGoal),
         KeyCode::Char('j') => Some(Action::Down),
         KeyCode::Char('k') => Some(Action::Up),
         KeyCode::Char(value) => Some(Action::Input(value)),
@@ -73,6 +74,18 @@ mod tests {
         assert_eq!(
             key_event_to_action(key(KeyCode::Char('q'))),
             Some(Action::Quit)
+        );
+        assert_eq!(
+            key_event_to_action(key(KeyCode::Tab)),
+            Some(Action::ToggleField)
+        );
+        assert_eq!(
+            key_event_to_action(key(KeyCode::Char(']'))),
+            Some(Action::Input(']'))
+        );
+        assert_eq!(
+            key_event_to_action(key(KeyCode::Char('g'))),
+            Some(Action::RotateAdviceGoal)
         );
     }
 
