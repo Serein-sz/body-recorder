@@ -1,0 +1,163 @@
+name: Cross Platform Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30  # 全局超时
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            use_cross: false
+            output_name: br-linux-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            use_cross: false
+            output_name: br-darwin-amd64
+          - os: macos-26
+            target: aarch64-apple-darwin
+            use_cross: false
+            output_name: br-darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            use_cross: false
+            output_name: br-windows-amd64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (native)
+        if: "!matrix.use_cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        shell: bash
+        run: |
+          mkdir -p bin
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp target/${{ matrix.target }}/release/br.exe bin/${{ matrix.output_name }}
+          else
+            cp target/${{ matrix.target }}/release/br bin/${{ matrix.output_name }}
+          fi
+
+      - name: Strip binary (Linux/macOS)
+        if: ${{ !contains(matrix.target, 'windows') && !matrix.use_cross }}
+        run: strip bin/${{ matrix.output_name }}
+
+      - name: Compress (optional)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        run: |
+          cd bin
+          tar czf ${{ matrix.output_name }}.tar.gz ${{ matrix.output_name }}
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output_name }}
+          path: bin/${{ matrix.output_name }}*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure
+        run: ls -R artifacts/
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release_files
+          find artifacts -type f \( -name "br-*" -o -name "*.tar.gz" \) -exec cp {} release_files/ \;
+          ls -la release_files/
+
+      - name: Generate checksums
+        run: |
+          cd release_files
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release_files/*
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          body: |
+            ## br ${{ github.ref_name }}
+
+            ### 安装
+
+            **Linux (amd64)**
+            ```bash
+            curl -L -o br https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/br-linux-amd64
+            chmod +x br
+            sudo mv br /usr/local/bin/
+            ```
+
+            **macOS (Intel)**
+            ```bash
+            curl -L -o br https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/br-darwin-amd64
+            chmod +x br
+            sudo mv br /usr/local/bin/
+            ```
+
+            **macOS (Apple Silicon)**
+            ```bash
+            curl -L -o br https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/br-darwin-arm64
+            chmod +x br
+            sudo mv br /usr/local/bin/
+            ```
+
+            **Windows**
+            下载 `br-windows-amd64.exe` 并重命名为 `br.exe`，添加到 PATH。
+
+            ### 校验
+            ```bash
+            sha256sum -c SHA256SUMS.txt
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -90,23 +90,24 @@ pub fn render_comparison(
     .unwrap();
     writeln!(
         output,
-        "{:<14} {:<10} {:>10} {:>10} {:>8}  {:<10} range",
-        "period", "target", "average", "delta", "records", "status"
+        "{:<14} {:<10} {:>10} {:>10} {:>8}  {:<8} {:<10} range",
+        "period", "target", "average", "delta", "records", "source", "status"
     )
     .unwrap();
-    writeln!(output, "{}", "-".repeat(98)).unwrap();
+    writeln!(output, "{}", "-".repeat(107)).unwrap();
 
     for point in points {
         let delta = paint_delta(point.delta_from_recent_kg);
         let status = paint_status(point.delta_from_recent_kg);
         writeln!(
             output,
-            "{:<14} {:<10} {:>10} {} {:>8}  {} {} to {}",
+            "{:<14} {:<10} {:>10} {} {:>8}  {:<8} {} {} to {}",
             point.label,
             point.target_date,
             format_average(point.average_kg),
             delta,
             point.sample_count,
+            point.value_source.label(),
             status,
             point.start,
             point.end
@@ -286,7 +287,7 @@ fn format_status(value: Option<f64>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::{DataStatus, DietGoal, PeriodAverage, TrendAnalysis};
+    use crate::stats::{ComparisonValueSource, DataStatus, DietGoal, PeriodAverage, TrendAnalysis};
 
     fn date(value: &str) -> NaiveDate {
         NaiveDate::parse_from_str(value, "%Y-%m-%d").unwrap()
@@ -324,6 +325,32 @@ mod tests {
             render_update_weight(&result),
             "no record found for 2026-05-14\n"
         );
+    }
+
+    #[test]
+    fn renders_comparison_value_source() {
+        let recent = PeriodAverage {
+            label: "recent 4 weeks",
+            start: date("2026-04-17"),
+            end: date("2026-05-14"),
+            average_kg: Some(79.0),
+            sample_count: 2,
+        };
+        let points = vec![ComparisonPoint {
+            label: "1 month  ago",
+            target_date: date("2026-04-14"),
+            start: date("2026-04-07"),
+            end: date("2026-04-21"),
+            average_kg: Some(81.0),
+            sample_count: 0,
+            delta_from_recent_kg: Some(-2.0),
+            value_source: ComparisonValueSource::Filled,
+        }];
+
+        let output = render_comparison(date("2026-05-14"), 4, &recent, &points);
+
+        assert!(output.contains("source"));
+        assert!(output.contains("filled"));
     }
 
     #[test]

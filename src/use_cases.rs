@@ -294,6 +294,6 @@ mod tests {
 
         assert_eq!(result.reference_date, reference_date);
         assert_eq!(result.total_records, 1);
-        assert_eq!(repository.calls(), ["between:2025-05-07:2026-05-14"]);
+        assert_eq!(repository.calls(), ["between:2025-05-14:2026-05-14"]);
     }
 }

@@ -32,6 +32,24 @@ pub struct ComparisonPoint {
     pub average_kg: Option<f64>,
     pub sample_count: usize,
     pub delta_from_recent_kg: Option<f64>,
+    pub value_source: ComparisonValueSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComparisonValueSource {
+    Direct,
+    Filled,
+    Missing,
+}
+
+impl ComparisonValueSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Filled => "filled",
+            Self::Missing => "missing",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,7 +136,7 @@ pub struct AdviceRecommendation {
 }
 
 pub fn comparison_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
-    (reference_date - Duration::days(372), reference_date)
+    (reference_date - Duration::days(365), reference_date)
 }
 
 pub fn advice_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
@@ -144,8 +162,18 @@ pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> W
     .map(|(label, target_date)| {
         let start = target_date - Duration::days(POINT_WINDOW_DAYS);
         let end = target_date + Duration::days(POINT_WINDOW_DAYS);
-        let average = average_between(records, start, end);
         let sample_count = count_between(records, start, end);
+        let direct_average = average_between(records, start, end);
+        let filled_average = direct_average
+            .is_none()
+            .then(|| interpolate_at(records, target_date))
+            .flatten();
+        let average = direct_average.or(filled_average);
+        let value_source = match (sample_count, filled_average) {
+            (count, _) if count > 0 => ComparisonValueSource::Direct,
+            (0, Some(_)) => ComparisonValueSource::Filled,
+            _ => ComparisonValueSource::Missing,
+        };
         let delta_from_recent_kg = recent_value
             .zip(average)
             .map(|(recent, point)| recent - point);
@@ -158,6 +186,7 @@ pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> W
             average_kg: average,
             sample_count,
             delta_from_recent_kg,
+            value_source,
         }
     })
     .collect();
@@ -385,6 +414,26 @@ fn average_between(records: &[WeightRecord], start: NaiveDate, end: NaiveDate) -
     }
 }
 
+fn interpolate_at(records: &[WeightRecord], target_date: NaiveDate) -> Option<f64> {
+    let before = records
+        .iter()
+        .filter(|record| record.record_date < target_date)
+        .max_by_key(|record| record.record_date)?;
+    let after = records
+        .iter()
+        .filter(|record| record.record_date > target_date)
+        .min_by_key(|record| record.record_date)?;
+    let total_days = (after.record_date - before.record_date).num_days() as f64;
+    if total_days <= 0.0 {
+        return None;
+    }
+
+    let target_days = (target_date - before.record_date).num_days() as f64;
+    let fraction = target_days / total_days;
+
+    Some(before.weight_kg + ((after.weight_kg - before.weight_kg) * fraction))
+}
+
 fn count_between(records: &[WeightRecord], start: NaiveDate, end: NaiveDate) -> usize {
     records
         .iter()
@@ -421,7 +470,64 @@ mod tests {
         assert_eq!(comparison.recent_average.sample_count, 2);
         assert_eq!(comparison.recent_average.average_kg, Some(79.0));
         assert_eq!(comparison.points[0].average_kg, Some(82.0));
+        assert_eq!(
+            comparison.points[0].value_source,
+            ComparisonValueSource::Direct
+        );
         assert_eq!(comparison.points[0].delta_from_recent_kg, Some(-3.0));
+    }
+
+    #[test]
+    fn fills_empty_historical_window_from_surrounding_records() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let records = vec![
+            record("2026-05-01", 80.0),
+            record("2026-05-14", 78.0),
+            record("2026-04-01", 82.0),
+            record("2026-04-27", 80.0),
+        ];
+
+        let comparison = compare_weights(&records, reference_date);
+        let point = &comparison.points[0];
+
+        assert_eq!(point.sample_count, 0);
+        assert_eq!(point.value_source, ComparisonValueSource::Filled);
+        assert_eq!(point.average_kg, Some(81.0));
+        assert!((point.delta_from_recent_kg.unwrap() - -1.6667).abs() < 0.001);
+    }
+
+    #[test]
+    fn leaves_historical_window_missing_without_surrounding_records() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let records = vec![
+            record("2026-05-01", 80.0),
+            record("2026-05-14", 78.0),
+            record("2026-04-27", 80.0),
+        ];
+
+        let comparison = compare_weights(&records, reference_date);
+        let point = &comparison.points[0];
+
+        assert_eq!(point.sample_count, 0);
+        assert_eq!(point.value_source, ComparisonValueSource::Missing);
+        assert_eq!(point.average_kg, None);
+        assert_eq!(point.delta_from_recent_kg, None);
+    }
+
+    #[test]
+    fn does_not_fill_missing_recent_baseline() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
+        let records = vec![record("2026-04-14", 82.0)];
+
+        let comparison = compare_weights(&records, reference_date);
+
+        assert_eq!(comparison.recent_average.average_kg, None);
+        assert_eq!(
+            comparison.points[0].value_source,
+            ComparisonValueSource::Direct
+        );
+        assert_eq!(comparison.points[0].average_kg, Some(82.0));
+        assert_eq!(comparison.points[0].delta_from_recent_kg, None);
     }
 
     #[test]
@@ -430,7 +536,10 @@ mod tests {
 
         assert_eq!(
             comparison_range(reference_date),
-            (NaiveDate::from_ymd_opt(2025, 5, 7).unwrap(), reference_date)
+            (
+                NaiveDate::from_ymd_opt(2025, 5, 14).unwrap(),
+                reference_date
+            )
         );
     }
 
