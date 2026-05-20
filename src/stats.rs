@@ -7,6 +7,8 @@ const ADVICE_WINDOW_DAYS: i64 = 28;
 const ADVICE_ENDPOINT_DAYS: i64 = 7;
 const MIN_ADVICE_RECORDS: usize = 10;
 const MIN_ENDPOINT_RECORDS: usize = 3;
+pub const HEIGHT_METERS: f64 = 1.73;
+pub const DEFAULT_TARGET_WEIGHT_KG: f64 = 70.0;
 
 #[derive(Debug)]
 pub struct WeightComparison {
@@ -53,6 +55,25 @@ impl ComparisonValueSource {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BmiCategory {
+    Underweight,
+    Normal,
+    Overweight,
+    Obesity,
+}
+
+impl BmiCategory {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Underweight => "underweight",
+            Self::Normal => "normal",
+            Self::Overweight => "overweight",
+            Self::Obesity => "obesity",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DietGoal {
     Cut,
     Maintain,
@@ -75,6 +96,39 @@ pub struct DietAdvice {
     pub analysis: TrendAnalysis,
     pub recommendation: Option<AdviceRecommendation>,
     pub interpretation: &'static str,
+}
+
+#[derive(Debug)]
+pub struct TargetProjection {
+    pub target_kg: f64,
+    pub analysis: TrendAnalysis,
+    pub current_average_kg: Option<f64>,
+    pub remaining_kg: Option<f64>,
+    pub estimated_date: Option<NaiveDate>,
+    pub status: ProjectionStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionStatus {
+    Reached,
+    OnTrack,
+    AwayFromTarget,
+    FlatTrend,
+    InsufficientData,
+    NoCurrentWeight,
+}
+
+impl ProjectionStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reached => "reached",
+            Self::OnTrack => "on track",
+            Self::AwayFromTarget => "away from target",
+            Self::FlatTrend => "flat trend",
+            Self::InsufficientData => "insufficient",
+            Self::NoCurrentWeight => "no current weight",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -144,6 +198,26 @@ pub fn advice_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
         reference_date - Duration::days(ADVICE_WINDOW_DAYS - 1),
         reference_date,
     )
+}
+
+pub fn calculate_bmi(weight_kg: f64) -> f64 {
+    weight_kg / (HEIGHT_METERS * HEIGHT_METERS)
+}
+
+pub fn bmi_for_average(average_kg: Option<f64>) -> Option<f64> {
+    average_kg.map(calculate_bmi)
+}
+
+pub fn classify_bmi(bmi: f64) -> BmiCategory {
+    if bmi < 18.5 {
+        BmiCategory::Underweight
+    } else if bmi < 25.0 {
+        BmiCategory::Normal
+    } else if bmi < 30.0 {
+        BmiCategory::Overweight
+    } else {
+        BmiCategory::Obesity
+    }
 }
 
 pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> WeightComparison {
@@ -218,6 +292,48 @@ pub fn build_diet_advice(
         analysis,
         recommendation,
         interpretation,
+    }
+}
+
+pub fn build_target_projection(
+    records: &[WeightRecord],
+    reference_date: NaiveDate,
+    target_kg: f64,
+) -> TargetProjection {
+    let analysis = analyze_trend(records, reference_date);
+    let current_average_kg = analysis.short_term_average.average_kg;
+    let remaining_kg = current_average_kg.map(|current| current - target_kg);
+    let (status, estimated_date) = match (current_average_kg, analysis.trend_kg_per_week) {
+        (None, _) => (ProjectionStatus::NoCurrentWeight, None),
+        (Some(current), _) if (current - target_kg).abs() <= 0.05 => {
+            (ProjectionStatus::Reached, Some(reference_date))
+        }
+        (_, _) if analysis.data_status != DataStatus::Sufficient => {
+            (ProjectionStatus::InsufficientData, None)
+        }
+        (Some(_), Some(trend)) if trend.abs() <= 0.05 => (ProjectionStatus::FlatTrend, None),
+        (Some(current), Some(trend)) => {
+            let weeks = (target_kg - current) / trend;
+            if weeks <= 0.0 {
+                (ProjectionStatus::AwayFromTarget, None)
+            } else {
+                let days = (weeks * 7.0).ceil() as i64;
+                (
+                    ProjectionStatus::OnTrack,
+                    Some(reference_date + Duration::days(days)),
+                )
+            }
+        }
+        (Some(_), None) => (ProjectionStatus::InsufficientData, None),
+    };
+
+    TargetProjection {
+        target_kg,
+        analysis,
+        current_average_kg,
+        remaining_kg,
+        estimated_date,
+        status,
     }
 }
 
@@ -455,6 +571,30 @@ mod tests {
     }
 
     #[test]
+    fn calculates_bmi_from_fixed_height() {
+        let bmi = calculate_bmi(70.0);
+
+        assert!((bmi - 23.388_686).abs() < 0.000_001);
+        assert_eq!(format!("{bmi:.2}"), "23.39");
+    }
+
+    #[test]
+    fn classifies_bmi_boundary_values() {
+        assert_eq!(classify_bmi(18.49), BmiCategory::Underweight);
+        assert_eq!(classify_bmi(18.5), BmiCategory::Normal);
+        assert_eq!(classify_bmi(24.99), BmiCategory::Normal);
+        assert_eq!(classify_bmi(25.0), BmiCategory::Overweight);
+        assert_eq!(classify_bmi(29.99), BmiCategory::Overweight);
+        assert_eq!(classify_bmi(30.0), BmiCategory::Obesity);
+    }
+
+    #[test]
+    fn maps_optional_average_to_optional_bmi() {
+        assert_eq!(bmi_for_average(None), None);
+        assert!((bmi_for_average(Some(70.0)).unwrap() - 23.388_686).abs() < 0.000_001);
+    }
+
+    #[test]
     fn compares_recent_average_to_prior_windows() {
         let reference_date = NaiveDate::from_ymd_opt(2026, 5, 14).unwrap();
         let records = vec![
@@ -624,5 +764,54 @@ mod tests {
             gain.recommendation.unwrap().direction,
             "keep current diet direction"
         );
+    }
+
+    #[test]
+    fn projects_target_date_when_trend_moves_toward_goal() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        let records = vec![
+            record("2026-05-01", 74.0),
+            record("2026-05-02", 74.1),
+            record("2026-05-03", 74.0),
+            record("2026-05-04", 73.9),
+            record("2026-05-12", 73.0),
+            record("2026-05-13", 72.9),
+            record("2026-05-14", 73.1),
+            record("2026-05-22", 72.5),
+            record("2026-05-23", 72.4),
+            record("2026-05-24", 72.5),
+            record("2026-05-25", 72.6),
+        ];
+
+        let projection = build_target_projection(&records, reference_date, 70.0);
+
+        assert_eq!(projection.status, ProjectionStatus::OnTrack);
+        assert_eq!(
+            projection.estimated_date,
+            Some(NaiveDate::from_ymd_opt(2026, 7, 2).unwrap())
+        );
+    }
+
+    #[test]
+    fn does_not_project_when_trend_moves_away_from_goal() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        let records = vec![
+            record("2026-05-01", 72.0),
+            record("2026-05-02", 72.1),
+            record("2026-05-03", 72.0),
+            record("2026-05-04", 72.2),
+            record("2026-05-12", 72.6),
+            record("2026-05-13", 72.8),
+            record("2026-05-14", 72.7),
+            record("2026-05-22", 73.2),
+            record("2026-05-23", 73.3),
+            record("2026-05-24", 73.2),
+            record("2026-05-25", 73.4),
+        ];
+
+        let projection = build_target_projection(&records, reference_date, 70.0);
+
+        assert_eq!(projection.status, ProjectionStatus::AwayFromTarget);
+        assert_eq!(projection.estimated_date, None);
     }
 }

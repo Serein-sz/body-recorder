@@ -1,17 +1,22 @@
 use super::{AnalysisView, App, InputField, LoadState, Mode, OperationStatus};
 use crate::stats::{
-    AdviceRecommendation, ComparisonPoint, ComparisonValueSource, DataStatus, PeriodAverage,
-    TrendClass,
+    AdviceRecommendation, BmiCategory, ComparisonPoint, ComparisonValueSource, DataStatus,
+    PeriodAverage, ProjectionStatus, TrendAnalysis, TrendClass, analyze_trend, bmi_for_average,
+    calculate_bmi, classify_bmi,
 };
 use crate::tui::app::advice_goal_label;
+use chrono::NaiveDate;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
-const RECORDS_WIDTH_PERCENT: u16 = 40;
-const ANALYSIS_WIDTH_PERCENT: u16 = 60;
+const RECORDS_WIDTH_PERCENT: u16 = 44;
+const ANALYSIS_WIDTH_PERCENT: u16 = 56;
+const BMI_VALUE_WIDTH: usize = 10;
+const BMI_CATEGORY_WIDTH: usize = 11;
+const BMI_CELL_WIDTH: usize = BMI_VALUE_WIDTH + BMI_CATEGORY_WIDTH + 1;
 
 pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
     let root = Layout::default()
@@ -74,13 +79,21 @@ fn render_records(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect)
                 } else {
                     Style::default()
                 };
-                Line::from(vec![Span::styled(
-                    format!(
-                        "{marker} {}  {:.2} kg",
-                        record.record_date, record.weight_kg
+                let bmi = calculate_bmi(record.weight_kg);
+                Line::from(vec![
+                    Span::styled(
+                        format!(
+                            "{marker} {}  {:.2} kg  ",
+                            record.record_date, record.weight_kg
+                        ),
+                        style,
                     ),
-                    style,
-                )])
+                    Span::styled(format!("BMI {bmi:.2} "), style),
+                    Span::styled(
+                        classify_bmi(bmi).label().to_string(),
+                        style.patch(bmi_category_style(classify_bmi(bmi))),
+                    ),
+                ])
             })
             .collect(),
     };
@@ -99,6 +112,7 @@ fn render_analysis(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect
         AnalysisView::Summary => summary_lines(app),
         AnalysisView::Compare => compare_lines(app),
         AnalysisView::Advice => advice_lines(app),
+        AnalysisView::Target => target_lines(app),
     };
 
     frame.render_widget(
@@ -110,7 +124,13 @@ fn render_analysis(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect
 }
 
 fn summary_lines(app: &App) -> Vec<Line<'static>> {
-    app.trend_lines().into_iter().map(Line::from).collect()
+    let analysis = analyze_trend(&app.records, app.reference_date);
+    vec![
+        Line::from(format!("range: {} to {}", analysis.start, analysis.end)),
+        Line::from(format!("data: {}", analysis.data_status.label())),
+        trend_line(analysis.trend_kg_per_week, analysis.trend_class),
+        short_term_average_line(&analysis),
+    ]
 }
 
 fn compare_lines(app: &App) -> Vec<Line<'static>> {
@@ -133,14 +153,15 @@ fn compare_lines(app: &App) -> Vec<Line<'static>> {
                     result.reference_date, result.total_records
                 )),
                 Line::from(format!(
-                    "baseline: {}   {}   {} record(s)",
+                    "baseline: {}   {}   {}   {} record(s)",
                     result.comparison.recent_average.label,
                     format_average(&result.comparison.recent_average),
+                    format_bmi(bmi_for_average(result.comparison.recent_average.average_kg)),
                     result.comparison.recent_average.sample_count
                 )),
                 Line::from(""),
                 Line::styled(
-                    "period        average      delta       source",
+                    "period        average      BMI                    delta       source",
                     title_style(),
                 ),
             ];
@@ -151,18 +172,22 @@ fn compare_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn compare_point_line(point: &ComparisonPoint) -> Line<'static> {
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(format!("{:<13} ", point.label)),
         Span::styled(
             format!("{:<12} ", format_optional_kg(point.average_kg)),
             optional_value_style(point.average_kg),
         ),
+    ];
+    spans.extend(bmi_spans(bmi_for_average(point.average_kg), BMI_CELL_WIDTH));
+    spans.extend([
         Span::styled(
-            format!("{:<11} ", format_delta(point.delta_from_recent_kg)),
+            format!("{:<12} ", format_delta(point.delta_from_recent_kg)),
             delta_style(point.delta_from_recent_kg),
         ),
         Span::styled(point.value_source.label(), source_style(point.value_source)),
-    ])
+    ]);
+    Line::from(spans)
 }
 
 fn advice_lines(app: &App) -> Vec<Line<'static>> {
@@ -193,6 +218,7 @@ fn advice_lines(app: &App) -> Vec<Line<'static>> {
                     ),
                 ]),
                 trend_line(analysis.trend_kg_per_week, analysis.trend_class),
+                short_term_average_line(analysis),
                 Line::from(""),
                 Line::styled("Interpretation", title_style()),
                 Line::from(advice.interpretation.to_string()),
@@ -232,6 +258,60 @@ fn recommendation_lines(recommendation: &AdviceRecommendation) -> Vec<Line<'stat
         ));
     }
     lines
+}
+
+fn target_lines(app: &App) -> Vec<Line<'static>> {
+    match &app.target {
+        LoadState::NotLoaded => vec![Line::styled(
+            "Press Tab to open Target or r to load it.",
+            unavailable_style(),
+        )],
+        LoadState::Loading => vec![Line::styled("loading target estimate...", loading_style())],
+        LoadState::Error(message) => {
+            vec![Line::styled(
+                format!("target error: {message}"),
+                error_style(),
+            )]
+        }
+        LoadState::Ready(result) => {
+            let projection = &result.projection;
+            let analysis = &projection.analysis;
+            vec![
+                Line::from(format!(
+                    "target: {:.2} kg   data: {}",
+                    projection.target_kg,
+                    analysis.data_status.label()
+                )),
+                trend_line(analysis.trend_kg_per_week, analysis.trend_class),
+                short_term_average_line(analysis),
+                Line::from(""),
+                Line::styled("Projection", title_style()),
+                Line::from(format!(
+                    "current avg: {}",
+                    format_optional_kg(projection.current_average_kg)
+                )),
+                Line::from(format!(
+                    "remaining: {}",
+                    format_remaining(projection.remaining_kg)
+                )),
+                Line::from(vec![
+                    Span::raw("status: "),
+                    Span::styled(
+                        projection.status.label(),
+                        projection_status_style(projection.status),
+                    ),
+                ]),
+                Line::from(format!(
+                    "estimate: {}",
+                    format_estimated_date(projection.estimated_date)
+                )),
+                Line::styled(
+                    "simple 4-week trend estimate, not a precise prediction",
+                    unavailable_style(),
+                ),
+            ]
+        }
+    }
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
@@ -353,6 +433,7 @@ fn view_tab_spans(active: AnalysisView) -> Vec<Span<'static>> {
         AnalysisView::Summary,
         AnalysisView::Compare,
         AnalysisView::Advice,
+        AnalysisView::Target,
     ]
     .into_iter()
     .enumerate()
@@ -388,6 +469,25 @@ fn trend_line(value: Option<f64>, class: Option<TrendClass>) -> Line<'static> {
         Span::raw("   class: "),
         Span::styled(class_label, trend_class_style(class)),
     ])
+}
+
+fn short_term_average_line(analysis: &TrendAnalysis) -> Line<'static> {
+    let mut spans = vec![
+        Span::raw("7-day average: "),
+        Span::styled(
+            format_optional_kg(analysis.short_term_average.average_kg),
+            optional_value_style(analysis.short_term_average.average_kg),
+        ),
+        Span::raw(format!(
+            " from {} record(s)   ",
+            analysis.short_term_average.sample_count
+        )),
+    ];
+    spans.extend(bmi_spans(
+        bmi_for_average(analysis.short_term_average.average_kg),
+        0,
+    ));
+    Line::from(spans)
 }
 
 fn status_line(status: &OperationStatus) -> Line<'static> {
@@ -491,12 +591,28 @@ fn data_status_style(status: DataStatus) -> Style {
     }
 }
 
+fn projection_status_style(status: ProjectionStatus) -> Style {
+    match status {
+        ProjectionStatus::Reached | ProjectionStatus::OnTrack => favorable_style(),
+        ProjectionStatus::FlatTrend | ProjectionStatus::InsufficientData => caution_style(),
+        ProjectionStatus::AwayFromTarget | ProjectionStatus::NoCurrentWeight => error_style(),
+    }
+}
+
 fn trend_class_style(class: Option<TrendClass>) -> Style {
     match class {
         Some(TrendClass::Stable) => favorable_style(),
         Some(TrendClass::LosingFast | TrendClass::GainingFast) => caution_style(),
         Some(TrendClass::LosingModerate | TrendClass::GainingModerate) => neutral_style(),
         None => unavailable_style(),
+    }
+}
+
+fn bmi_category_style(category: BmiCategory) -> Style {
+    match category {
+        BmiCategory::Normal => favorable_style(),
+        BmiCategory::Underweight | BmiCategory::Overweight => neutral_style(),
+        BmiCategory::Obesity => unfavorable_style(),
     }
 }
 
@@ -513,6 +629,46 @@ fn format_average(period: &PeriodAverage) -> String {
     format_optional_kg(period.average_kg)
 }
 
+fn format_bmi(value: Option<f64>) -> String {
+    value
+        .map(|value| {
+            let category = classify_bmi(value);
+            format!("BMI {value:.2} {}", category.label())
+        })
+        .unwrap_or_else(|| "BMI n/a".to_string())
+}
+
+fn bmi_spans(value: Option<f64>, width: usize) -> Vec<Span<'static>> {
+    match value {
+        Some(value) => {
+            let category = classify_bmi(value);
+            let value_text = format!("BMI {value:.2}");
+            let visual_width = BMI_VALUE_WIDTH + BMI_CATEGORY_WIDTH;
+            let trailing_width = width.saturating_sub(visual_width);
+            vec![
+                Span::raw(format!("{value_text:<BMI_VALUE_WIDTH$}")),
+                Span::styled(
+                    format!("{:<BMI_CATEGORY_WIDTH$}", category.label()),
+                    bmi_category_style(category),
+                ),
+                Span::raw(" ".repeat(trailing_width)),
+            ]
+        }
+        None => vec![Span::styled(
+            pad_right("BMI n/a".to_string(), width),
+            unavailable_style(),
+        )],
+    }
+}
+
+fn pad_right(value: String, width: usize) -> String {
+    if width == 0 {
+        value
+    } else {
+        format!("{value:<width$}")
+    }
+}
+
 fn format_optional_kg(value: Option<f64>) -> String {
     value
         .map(|value| format!("{value:.2} kg"))
@@ -522,6 +678,26 @@ fn format_optional_kg(value: Option<f64>) -> String {
 fn format_delta(value: Option<f64>) -> String {
     value
         .map(|value| format!("{value:+.2} kg"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_remaining(value: Option<f64>) -> String {
+    value
+        .map(|remaining| {
+            if remaining > 0.05 {
+                format!("{remaining:.2} kg above")
+            } else if remaining < -0.05 {
+                format!("{:.2} kg below", remaining.abs())
+            } else {
+                "at target".to_string()
+            }
+        })
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_estimated_date(value: Option<NaiveDate>) -> String {
+    value
+        .map(|date| date.to_string())
         .unwrap_or_else(|| "n/a".to_string())
 }
 
@@ -562,8 +738,8 @@ mod tests {
     use super::*;
     use crate::cli::AdviceGoal;
     use crate::models::WeightRecord;
-    use crate::stats::{DietGoal, build_diet_advice, compare_weights};
-    use crate::use_cases::{AdviceResult, CompareWeightsResult};
+    use crate::stats::{DietGoal, build_diet_advice, build_target_projection, compare_weights};
+    use crate::use_cases::{AdviceResult, CompareWeightsResult, TargetResult};
     use chrono::NaiveDate;
 
     fn date(value: &str) -> NaiveDate {
@@ -589,6 +765,7 @@ mod tests {
         assert!(output.contains("Recent records"));
         assert!(output.contains("2026-05-19"));
         assert!(output.contains("72.40 kg"));
+        assert!(output.contains("BMI 24.19 normal"));
     }
 
     #[test]
@@ -659,7 +836,7 @@ mod tests {
 
         let output = render_to_text(&app, 120, 28);
 
-        assert!(output.contains("Summary [Compare] Advice"));
+        assert!(output.contains("Summary [Compare] Advice Target"));
     }
 
     #[test]
@@ -752,6 +929,72 @@ mod tests {
     }
 
     #[test]
+    fn styles_projection_status_semantics() {
+        assert_eq!(
+            projection_status_style(crate::stats::ProjectionStatus::OnTrack).fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            projection_status_style(crate::stats::ProjectionStatus::FlatTrend).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            projection_status_style(crate::stats::ProjectionStatus::AwayFromTarget).fg,
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn styles_bmi_categories() {
+        assert_eq!(
+            bmi_category_style(crate::stats::BmiCategory::Normal).fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            bmi_category_style(crate::stats::BmiCategory::Underweight).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            bmi_category_style(crate::stats::BmiCategory::Overweight).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            bmi_category_style(crate::stats::BmiCategory::Obesity).fg,
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn builds_fixed_width_bmi_spans_for_compare_rows() {
+        let underweight = bmi_spans(Some(18.0), BMI_CELL_WIDTH);
+        let normal = bmi_spans(Some(23.0), BMI_CELL_WIDTH);
+        let overweight = bmi_spans(Some(27.0), BMI_CELL_WIDTH);
+
+        for spans in [&underweight, &normal, &overweight] {
+            let visible_width = spans
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum::<usize>();
+            assert_eq!(visible_width, BMI_CELL_WIDTH);
+        }
+
+        assert_eq!(underweight[1].content, "underweight");
+        assert_eq!(normal[1].content, "normal     ");
+        assert_eq!(overweight[1].content, "overweight ");
+        assert_eq!(normal[1].style.fg, Some(Color::Green));
+        assert_eq!(overweight[1].style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn builds_fixed_width_missing_bmi_span_for_compare_rows() {
+        let spans = bmi_spans(None, BMI_CELL_WIDTH);
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.chars().count(), BMI_CELL_WIDTH);
+        assert_eq!(spans[0].style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
     fn renders_compare_loaded_state() {
         let reference_date = date("2026-05-19");
         let records = vec![
@@ -773,6 +1016,8 @@ mod tests {
         assert!(output.contains("Analysis - Compare"));
         assert!(output.contains("baseline"));
         assert!(output.contains("period"));
+        assert!(output.contains("BMI"));
+        assert!(output.contains("normal"));
         assert!(output.contains("direct"));
     }
 
@@ -805,6 +1050,9 @@ mod tests {
 
         assert!(output.contains("Analysis - Advice"));
         assert!(output.contains("goal: fat loss"));
+        assert!(output.contains("7-day average"));
+        assert!(output.contains("BMI"));
+        assert!(output.contains("normal"));
         assert!(output.contains("Interpretation"));
         assert!(output.contains("Diet adjustment"));
     }
@@ -830,6 +1078,40 @@ mod tests {
         app.advice = LoadState::Error("advice failed".to_string());
         let error = render_to_text(&app, 120, 28);
         assert!(error.contains("advice failed"));
+    }
+
+    #[test]
+    fn renders_target_loaded_state() {
+        let reference_date = date("2026-05-28");
+        let records = advice_records(reference_date);
+        let mut app = App::new_with_date(reference_date);
+        app.active_view = AnalysisView::Target;
+        app.target = LoadState::Ready(TargetResult {
+            projection: build_target_projection(&records, reference_date, 70.0),
+        });
+
+        let output = render_to_text(&app, 120, 34);
+
+        assert!(output.contains("Analysis - Target"));
+        assert!(output.contains("target: 70.00 kg"));
+        assert!(output.contains("Projection"));
+        assert!(output.contains("current avg"));
+        assert!(output.contains("remaining"));
+        assert!(output.contains("estimate"));
+    }
+
+    #[test]
+    fn renders_target_loading_and_error_states() {
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.active_view = AnalysisView::Target;
+        app.target = LoadState::Loading;
+
+        let loading = render_to_text(&app, 120, 28);
+        assert!(loading.contains("loading target estimate"));
+
+        app.target = LoadState::Error("target failed".to_string());
+        let error = render_to_text(&app, 120, 28);
+        assert!(error.contains("target failed"));
     }
 
     fn advice_records(reference_date: NaiveDate) -> Vec<WeightRecord> {

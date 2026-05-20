@@ -65,6 +65,12 @@ pub async fn run() -> AppResult<()> {
             print!("{}", output::render_advice(&result.advice));
             Ok(())
         }
+        Commands::Target { weight_kg, date } => {
+            let repository = SupabaseClient::from_config_file()?;
+            let result = use_cases::target(&repository, weight_kg, date).await?;
+            print!("{}", output::render_target_projection(&result.projection));
+            Ok(())
+        }
         Commands::Tui => {
             let repository = SupabaseClient::from_config_file()?;
             tui::run(&repository).await

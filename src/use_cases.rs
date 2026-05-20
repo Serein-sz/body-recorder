@@ -3,8 +3,8 @@ use crate::error::AppResult;
 use crate::models::WeightRecord;
 use crate::repository::WeightRepository;
 use crate::stats::{
-    DietAdvice, DietGoal, WeightComparison, advice_range, build_diet_advice, compare_weights,
-    comparison_range,
+    DietAdvice, DietGoal, TargetProjection, WeightComparison, advice_range, build_diet_advice,
+    build_target_projection, compare_weights, comparison_range,
 };
 use crate::validation::{parse_date, parse_or_today, validate_weight};
 use chrono::NaiveDate;
@@ -41,6 +41,11 @@ pub struct CompareWeightsResult {
 #[derive(Debug)]
 pub struct AdviceResult {
     pub advice: DietAdvice,
+}
+
+#[derive(Debug)]
+pub struct TargetResult {
+    pub projection: TargetProjection,
 }
 
 pub async fn add_weight(
@@ -120,6 +125,20 @@ pub async fn advice(
     let advice = build_diet_advice(&records, reference_date, goal.into());
 
     Ok(AdviceResult { advice })
+}
+
+pub async fn target(
+    repository: &impl WeightRepository,
+    target_kg: f64,
+    date: Option<String>,
+) -> AppResult<TargetResult> {
+    let reference_date = parse_or_today(date)?;
+    let target_kg = validate_weight(target_kg)?;
+    let (start, end) = advice_range(reference_date);
+    let records = repository.list_weights_between(start, end).await?;
+    let projection = build_target_projection(&records, reference_date, target_kg);
+
+    Ok(TargetResult { projection })
 }
 
 impl From<AdviceGoal> for DietGoal {
@@ -295,5 +314,17 @@ mod tests {
         assert_eq!(result.reference_date, reference_date);
         assert_eq!(result.total_records, 1);
         assert_eq!(repository.calls(), ["between:2025-05-14:2026-05-14"]);
+    }
+
+    #[tokio::test]
+    async fn target_fetches_recent_trend_range_from_repository() {
+        let reference_date = date("2026-05-28");
+        let repository = FakeRepository::new(vec![record(reference_date, 72.0)]);
+        let result = target(&repository, 70.0, Some("2026-05-28".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.projection.target_kg, 70.0);
+        assert_eq!(repository.calls(), ["between:2026-05-01:2026-05-28"]);
     }
 }

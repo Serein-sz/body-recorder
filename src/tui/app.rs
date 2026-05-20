@@ -2,8 +2,8 @@ use super::Action;
 use crate::cli::AdviceGoal;
 use crate::models::WeightRecord;
 use crate::repository::WeightRepository;
-use crate::stats::analyze_trend;
-use crate::use_cases::{self, AdviceResult, CompareWeightsResult};
+use crate::stats::DEFAULT_TARGET_WEIGHT_KG;
+use crate::use_cases::{self, AdviceResult, CompareWeightsResult, TargetResult};
 use crate::validation::{parse_date, validate_weight};
 use chrono::{Local, NaiveDate};
 
@@ -44,6 +44,7 @@ pub(crate) enum AnalysisView {
     Summary,
     Compare,
     Advice,
+    Target,
 }
 
 impl AnalysisView {
@@ -52,6 +53,7 @@ impl AnalysisView {
             Self::Summary => "Summary",
             Self::Compare => "Compare",
             Self::Advice => "Advice",
+            Self::Target => "Target",
         }
     }
 
@@ -59,7 +61,8 @@ impl AnalysisView {
         match self {
             Self::Summary => Self::Compare,
             Self::Compare => Self::Advice,
-            Self::Advice => Self::Summary,
+            Self::Advice => Self::Target,
+            Self::Target => Self::Summary,
         }
     }
 }
@@ -89,6 +92,7 @@ pub(crate) struct App {
     pub(crate) active_view: AnalysisView,
     pub(crate) compare: LoadState<CompareWeightsResult>,
     pub(crate) advice: LoadState<AdviceResult>,
+    pub(crate) target: LoadState<TargetResult>,
     pub(crate) advice_goal: AdviceGoal,
 }
 
@@ -108,6 +112,7 @@ impl App {
             active_view: AnalysisView::Summary,
             compare: LoadState::NotLoaded,
             advice: LoadState::NotLoaded,
+            target: LoadState::NotLoaded,
             advice_goal: AdviceGoal::Cut,
         }
     }
@@ -161,28 +166,6 @@ impl App {
             Action::Confirm => self.confirm(repository).await,
             _ => {}
         }
-    }
-
-    pub(crate) fn trend_lines(&self) -> Vec<String> {
-        let analysis = analyze_trend(&self.records, self.reference_date);
-        let mut lines = vec![
-            format!("range: {} to {}", analysis.start, analysis.end),
-            format!("data: {}", analysis.data_status.label()),
-            format!(
-                "trend: {}",
-                analysis
-                    .trend_kg_per_week
-                    .map(|value| format!("{value:+.2} kg/week"))
-                    .unwrap_or_else(|| "n/a".to_string())
-            ),
-        ];
-
-        match analysis.trend_class {
-            Some(class) => lines.push(format!("class: {}", class.label())),
-            None => lines.push("class: n/a".to_string()),
-        }
-
-        lines
     }
 
     fn start_add(&mut self) {
@@ -290,6 +273,7 @@ impl App {
             AnalysisView::Summary => self.refresh_records(repository).await,
             AnalysisView::Compare => self.load_compare(repository).await,
             AnalysisView::Advice => self.load_advice(repository).await,
+            AnalysisView::Target => self.load_target(repository).await,
         }
     }
 
@@ -314,7 +298,10 @@ impl App {
             AnalysisView::Advice if matches!(self.advice, LoadState::NotLoaded) => {
                 self.load_advice(repository).await;
             }
-            AnalysisView::Compare | AnalysisView::Advice => {}
+            AnalysisView::Target if matches!(self.target, LoadState::NotLoaded) => {
+                self.load_target(repository).await;
+            }
+            AnalysisView::Compare | AnalysisView::Advice | AnalysisView::Target => {}
         }
     }
 
@@ -343,6 +330,23 @@ impl App {
                 self.status = OperationStatus::Message("loaded advice analysis".to_string());
             }
             Err(error) => self.advice = LoadState::Error(error.to_string()),
+        }
+    }
+
+    pub(crate) async fn load_target(&mut self, repository: &impl WeightRepository) {
+        self.target = LoadState::Loading;
+        match use_cases::target(
+            repository,
+            DEFAULT_TARGET_WEIGHT_KG,
+            Some(self.reference_date.to_string()),
+        )
+        .await
+        {
+            Ok(result) => {
+                self.target = LoadState::Ready(result);
+                self.status = OperationStatus::Message("loaded target estimate".to_string());
+            }
+            Err(error) => self.target = LoadState::Error(error.to_string()),
         }
     }
 
@@ -429,6 +433,7 @@ impl App {
     fn invalidate_analysis(&mut self) {
         self.compare.invalidate();
         self.advice.invalidate();
+        self.target.invalidate();
     }
 
     fn clamp_selection(&mut self) {
@@ -643,7 +648,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switches_analysis_views_and_loads_compare_and_advice() {
+    async fn switches_analysis_views_and_loads_compare_advice_and_target() {
         let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
         let mut app = App::new_with_date(date("2026-05-19"));
 
@@ -654,10 +659,15 @@ mod tests {
         app.handle_action(Action::ToggleField, &repository).await;
         assert_eq!(app.active_view, AnalysisView::Advice);
         assert!(matches!(app.advice, LoadState::Ready(_)));
+
+        app.handle_action(Action::ToggleField, &repository).await;
+        assert_eq!(app.active_view, AnalysisView::Target);
+        assert!(matches!(app.target, LoadState::Ready(_)));
         assert_eq!(
             repository.calls(),
             [
                 "between:2025-05-19:2026-05-19",
+                "between:2026-04-22:2026-05-19",
                 "between:2026-04-22:2026-05-19"
             ]
         );
@@ -711,12 +721,15 @@ mod tests {
         app.handle_action(Action::Refresh, &repository).await;
         app.active_view = AnalysisView::Advice;
         app.handle_action(Action::Refresh, &repository).await;
+        app.active_view = AnalysisView::Target;
+        app.handle_action(Action::Refresh, &repository).await;
 
         assert_eq!(
             repository.calls(),
             [
                 "list:30",
                 "between:2025-05-19:2026-05-19",
+                "between:2026-04-22:2026-05-19",
                 "between:2026-04-22:2026-05-19"
             ]
         );
@@ -729,6 +742,7 @@ mod tests {
         app.records = vec![record(date("2026-05-19"), 72.0)];
         app.load_compare(&repository).await;
         app.load_advice(&repository).await;
+        app.load_target(&repository).await;
 
         app.handle_action(Action::Edit, &repository).await;
         app.handle_action(Action::Input('1'), &repository).await;
@@ -736,5 +750,6 @@ mod tests {
 
         assert!(matches!(app.compare, LoadState::NotLoaded));
         assert!(matches!(app.advice, LoadState::NotLoaded));
+        assert!(matches!(app.target, LoadState::NotLoaded));
     }
 }

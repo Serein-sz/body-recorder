@@ -46,6 +46,15 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Estimate progress toward a target weight from the recent 4-week trend.
+    Target {
+        /// Target body weight in kilograms. Defaults to 70.0.
+        #[arg(long, default_value_t = crate::stats::DEFAULT_TARGET_WEIGHT_KG)]
+        weight_kg: f64,
+        /// Reference date for the estimate. Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// Print the Supabase SQL schema for this tool.
     Schema {
         #[arg(long, value_enum, default_value_t = AccessModel::ServiceRole)]
@@ -104,5 +113,15 @@ mod tests {
         let cli = Cli::try_parse_from(["br", "tui"]).unwrap();
 
         assert!(matches!(cli.command, Commands::Tui));
+    }
+
+    #[test]
+    fn target_weight_defaults_to_70kg() {
+        let cli = Cli::try_parse_from(["br", "target"]).unwrap();
+
+        match cli.command {
+            Commands::Target { weight_kg, .. } => assert_eq!(weight_kg, 70.0),
+            _ => panic!("expected target command"),
+        }
     }
 }
