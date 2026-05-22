@@ -1,10 +1,10 @@
-use crate::models::WeightRecord;
-use crate::stats::{
+use crate::app::use_cases::{AddWeightResult, DeleteWeightResult, UpdateWeightResult};
+use crate::domain::models::WeightRecord;
+use crate::domain::stats::{
     AdviceRecommendation, BmiCategory, ComparisonPoint, DataStatus, DietAdvice, PeriodAverage,
     ProjectionStatus, TargetProjection, TrendAnalysis, bmi_for_average, calculate_bmi,
     classify_bmi,
 };
-use crate::use_cases::{AddWeightResult, DeleteWeightResult, UpdateWeightResult};
 use ansi_term::ANSIString;
 use ansi_term::Colour::{Green, Red, Yellow};
 use ansi_term::Style;
@@ -442,7 +442,7 @@ fn format_status(value: Option<f64>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::stats::{
+    use crate::domain::stats::{
         ComparisonValueSource, DataStatus, DietGoal, PeriodAverage, ProjectionStatus,
         TargetProjection, TrendAnalysis,
     };

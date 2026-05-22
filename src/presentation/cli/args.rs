@@ -1,3 +1,6 @@
+use crate::domain::goals as domain_goals;
+use crate::domain::schema as domain_schema;
+use crate::domain::stats::DEFAULT_TARGET_WEIGHT_KG;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -49,7 +52,7 @@ pub enum Commands {
     /// Estimate progress toward a target weight from the recent 4-week trend.
     Target {
         /// Target body weight in kilograms. Defaults to 70.0.
-        #[arg(long, default_value_t = crate::stats::DEFAULT_TARGET_WEIGHT_KG)]
+        #[arg(long, default_value_t = DEFAULT_TARGET_WEIGHT_KG)]
         weight_kg: f64,
         /// Reference date for the estimate. Defaults to today.
         #[arg(long)]
@@ -80,6 +83,25 @@ pub enum AdviceGoal {
     Maintain,
     /// Gain body weight.
     Gain,
+}
+
+impl From<AccessModel> for domain_schema::AccessModel {
+    fn from(value: AccessModel) -> Self {
+        match value {
+            AccessModel::ServiceRole => Self::ServiceRole,
+            AccessModel::Anon => Self::Anon,
+        }
+    }
+}
+
+impl From<AdviceGoal> for domain_goals::AdviceGoal {
+    fn from(value: AdviceGoal) -> Self {
+        match value {
+            AdviceGoal::Cut => Self::Cut,
+            AdviceGoal::Maintain => Self::Maintain,
+            AdviceGoal::Gain => Self::Gain,
+        }
+    }
 }
 
 #[cfg(test)]

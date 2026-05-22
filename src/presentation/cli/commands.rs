@@ -1,11 +1,11 @@
-use crate::cli::{Cli, Commands};
-use crate::config::init_config;
+use crate::app::use_cases;
+use crate::domain::schema::schema_sql;
 use crate::error::AppResult;
-use crate::output;
-use crate::schema::schema_sql;
-use crate::supabase::SupabaseClient;
-use crate::tui;
-use crate::use_cases;
+use crate::presentation::cli::args::{Cli, Commands};
+use crate::presentation::cli::output;
+use crate::presentation::tui;
+use crate::storage::config::init_config;
+use crate::storage::supabase::SupabaseClient;
 use clap::Parser;
 
 pub async fn run() -> AppResult<()> {
@@ -18,7 +18,7 @@ pub async fn run() -> AppResult<()> {
             Ok(())
         }
         Commands::Schema { access } => {
-            println!("{}", schema_sql(access));
+            println!("{}", schema_sql(access.into()));
             Ok(())
         }
         Commands::Add { weight_kg, date } => {
@@ -61,7 +61,7 @@ pub async fn run() -> AppResult<()> {
         }
         Commands::Advice { goal, date } => {
             let repository = SupabaseClient::from_config_file()?;
-            let result = use_cases::advice(&repository, goal, date).await?;
+            let result = use_cases::advice(&repository, goal.map(Into::into), date).await?;
             print!("{}", output::render_advice(&result.advice));
             Ok(())
         }

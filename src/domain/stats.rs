@@ -1,4 +1,4 @@
-use crate::models::WeightRecord;
+use crate::domain::models::WeightRecord;
 use chrono::{Duration, NaiveDate};
 
 const POINT_WINDOW_DAYS: i64 = 7;

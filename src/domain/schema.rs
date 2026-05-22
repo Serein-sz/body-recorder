@@ -1,4 +1,8 @@
-use crate::cli::AccessModel;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessModel {
+    ServiceRole,
+    Anon,
+}
 
 const BASE_SCHEMA_SQL: &str = r#"create table if not exists public.weight_records (
   id uuid primary key default gen_random_uuid(),

@@ -1,5 +1,5 @@
+use crate::domain::models::WeightRecord;
 use crate::error::AppResult;
-use crate::models::WeightRecord;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 

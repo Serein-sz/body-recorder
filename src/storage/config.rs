@@ -1,5 +1,5 @@
+use crate::domain::models::Config;
 use crate::error::{AppError, AppResult};
-use crate::models::Config;
 use reqwest::Url;
 use std::fs;
 use std::path::PathBuf;

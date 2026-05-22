@@ -1,10 +1,10 @@
 use super::{AnalysisView, App, InputField, LoadState, Mode, OperationStatus};
-use crate::stats::{
+use crate::domain::stats::{
     AdviceRecommendation, BmiCategory, ComparisonPoint, ComparisonValueSource, DataStatus,
     PeriodAverage, ProjectionStatus, TrendAnalysis, TrendClass, analyze_trend, bmi_for_average,
     calculate_bmi, classify_bmi,
 };
-use crate::tui::app::advice_goal_label;
+use crate::presentation::tui::app::advice_goal_label;
 use chrono::NaiveDate;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -736,10 +736,13 @@ pub(crate) fn render_to_text(app: &App, width: u16, height: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::AdviceGoal;
-    use crate::models::WeightRecord;
-    use crate::stats::{DietGoal, build_diet_advice, build_target_projection, compare_weights};
-    use crate::use_cases::{AdviceResult, CompareWeightsResult, TargetResult};
+    use crate::app::use_cases::{AdviceResult, CompareWeightsResult, TargetResult};
+    use crate::domain::goals::AdviceGoal;
+    use crate::domain::models::WeightRecord;
+    use crate::domain::stats::{
+        BmiCategory, ComparisonValueSource, DataStatus, DietGoal, ProjectionStatus, TrendClass,
+        build_diet_advice, build_target_projection, compare_weights,
+    };
     use chrono::NaiveDate;
 
     fn date(value: &str) -> NaiveDate {
@@ -826,7 +829,9 @@ mod tests {
 
     #[test]
     fn analysis_panel_is_wider_than_records_panel() {
-        assert!(RECORDS_WIDTH_PERCENT < ANALYSIS_WIDTH_PERCENT);
+        const {
+            assert!(RECORDS_WIDTH_PERCENT < ANALYSIS_WIDTH_PERCENT);
+        }
     }
 
     #[test]
@@ -886,15 +891,15 @@ mod tests {
         assert_eq!(delta_style(None).fg, Some(Color::DarkGray));
 
         assert_eq!(
-            source_style(crate::stats::ComparisonValueSource::Direct).fg,
+            source_style(ComparisonValueSource::Direct).fg,
             Some(Color::Green)
         );
         assert_eq!(
-            source_style(crate::stats::ComparisonValueSource::Filled).fg,
+            source_style(ComparisonValueSource::Filled).fg,
             Some(Color::Yellow)
         );
         assert_eq!(
-            source_style(crate::stats::ComparisonValueSource::Missing).fg,
+            source_style(ComparisonValueSource::Missing).fg,
             Some(Color::DarkGray)
         );
     }
@@ -902,19 +907,19 @@ mod tests {
     #[test]
     fn styles_advice_status_trend_and_recommendation_semantics() {
         assert_eq!(
-            data_status_style(crate::stats::DataStatus::Sufficient).fg,
+            data_status_style(DataStatus::Sufficient).fg,
             Some(Color::Green)
         );
         assert_eq!(
-            data_status_style(crate::stats::DataStatus::Insufficient).fg,
+            data_status_style(DataStatus::Insufficient).fg,
             Some(Color::Yellow)
         );
         assert_eq!(
-            trend_class_style(Some(crate::stats::TrendClass::Stable)).fg,
+            trend_class_style(Some(TrendClass::Stable)).fg,
             Some(Color::Green)
         );
         assert_eq!(
-            trend_class_style(Some(crate::stats::TrendClass::GainingFast)).fg,
+            trend_class_style(Some(TrendClass::GainingFast)).fg,
             Some(Color::Yellow)
         );
         assert_eq!(
@@ -931,15 +936,15 @@ mod tests {
     #[test]
     fn styles_projection_status_semantics() {
         assert_eq!(
-            projection_status_style(crate::stats::ProjectionStatus::OnTrack).fg,
+            projection_status_style(ProjectionStatus::OnTrack).fg,
             Some(Color::Green)
         );
         assert_eq!(
-            projection_status_style(crate::stats::ProjectionStatus::FlatTrend).fg,
+            projection_status_style(ProjectionStatus::FlatTrend).fg,
             Some(Color::Yellow)
         );
         assert_eq!(
-            projection_status_style(crate::stats::ProjectionStatus::AwayFromTarget).fg,
+            projection_status_style(ProjectionStatus::AwayFromTarget).fg,
             Some(Color::Red)
         );
     }
@@ -947,19 +952,19 @@ mod tests {
     #[test]
     fn styles_bmi_categories() {
         assert_eq!(
-            bmi_category_style(crate::stats::BmiCategory::Normal).fg,
+            bmi_category_style(BmiCategory::Normal).fg,
             Some(Color::Green)
         );
         assert_eq!(
-            bmi_category_style(crate::stats::BmiCategory::Underweight).fg,
+            bmi_category_style(BmiCategory::Underweight).fg,
             Some(Color::Yellow)
         );
         assert_eq!(
-            bmi_category_style(crate::stats::BmiCategory::Overweight).fg,
+            bmi_category_style(BmiCategory::Overweight).fg,
             Some(Color::Yellow)
         );
         assert_eq!(
-            bmi_category_style(crate::stats::BmiCategory::Obesity).fg,
+            bmi_category_style(BmiCategory::Obesity).fg,
             Some(Color::Red)
         );
     }

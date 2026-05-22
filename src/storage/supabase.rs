@@ -1,7 +1,7 @@
-use crate::config::read_config;
+use crate::domain::models::{Config, WeightRecord};
 use crate::error::{AppError, AppResult};
-use crate::models::{Config, WeightRecord};
-use crate::repository::WeightRepository;
+use crate::storage::config::read_config;
+use crate::storage::repository::WeightRepository;
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};

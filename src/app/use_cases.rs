@@ -1,12 +1,12 @@
-use crate::cli::AdviceGoal;
-use crate::error::AppResult;
-use crate::models::WeightRecord;
-use crate::repository::WeightRepository;
-use crate::stats::{
+use crate::domain::goals::AdviceGoal;
+use crate::domain::models::WeightRecord;
+use crate::domain::stats::{
     DietAdvice, DietGoal, TargetProjection, WeightComparison, advice_range, build_diet_advice,
     build_target_projection, compare_weights, comparison_range,
 };
-use crate::validation::{parse_date, parse_or_today, validate_weight};
+use crate::domain::validation::{parse_date, parse_or_today, validate_weight};
+use crate::error::AppResult;
+use crate::storage::repository::WeightRepository;
 use chrono::NaiveDate;
 
 #[derive(Debug)]

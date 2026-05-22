@@ -1,10 +1,10 @@
 use super::Action;
-use crate::cli::AdviceGoal;
-use crate::models::WeightRecord;
-use crate::repository::WeightRepository;
-use crate::stats::DEFAULT_TARGET_WEIGHT_KG;
-use crate::use_cases::{self, AdviceResult, CompareWeightsResult, TargetResult};
-use crate::validation::{parse_date, validate_weight};
+use crate::app::use_cases::{self, AdviceResult, CompareWeightsResult, TargetResult};
+use crate::domain::goals::AdviceGoal;
+use crate::domain::models::WeightRecord;
+use crate::domain::stats::DEFAULT_TARGET_WEIGHT_KG;
+use crate::domain::validation::{parse_date, validate_weight};
+use crate::storage::repository::WeightRepository;
 use chrono::{Local, NaiveDate};
 
 const RECENT_LIMIT: u32 = 30;

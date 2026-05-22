@@ -5,7 +5,7 @@ mod terminal;
 mod ui;
 
 use crate::error::AppResult;
-use crate::repository::WeightRepository;
+use crate::storage::repository::WeightRepository;
 use std::time::Duration;
 
 pub(crate) use action::Action;
