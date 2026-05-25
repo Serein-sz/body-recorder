@@ -1,5 +1,5 @@
 use crate::domain::models::WeightRecord;
-use chrono::{Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate};
 
 const POINT_WINDOW_DAYS: i64 = 7;
 const RECENT_AVERAGE_DAYS: i64 = 28;
@@ -9,6 +9,14 @@ const MIN_ADVICE_RECORDS: usize = 10;
 const MIN_ENDPOINT_RECORDS: usize = 3;
 pub const HEIGHT_METERS: f64 = 1.73;
 pub const DEFAULT_TARGET_WEIGHT_KG: f64 = 70.0;
+pub const TDEE_PROFILE_SEX: TdeeSex = TdeeSex::Male;
+pub const TDEE_PROFILE_BIRTH_YEAR: i32 = 2001;
+pub const TDEE_PROFILE_BIRTH_MONTH: u32 = 3;
+pub const TDEE_PROFILE_BIRTH_DAY: u32 = 6;
+pub const TDEE_PROFILE_HEIGHT_CM: f64 = 173.0;
+pub const TDEE_PROFILE_ACTIVITY_FACTOR: f64 = 1.60;
+const TDEE_WINDOW_DAYS: i64 = 7;
+const MIN_NORMAL_TDEE_RECORDS: usize = 3;
 
 #[derive(Debug)]
 pub struct WeightComparison {
@@ -108,6 +116,58 @@ pub struct TargetProjection {
     pub status: ProjectionStatus,
 }
 
+#[derive(Debug)]
+pub struct TdeeEstimate {
+    pub reference_date: NaiveDate,
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+    pub basis: TdeeBasis,
+    pub average_weight_kg: Option<f64>,
+    pub sample_count: usize,
+    pub data_status: TdeeDataStatus,
+    pub bmr_kcal: Option<f64>,
+    pub tdee_kcal: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TdeeBasis {
+    pub sex: TdeeSex,
+    pub birth_date: NaiveDate,
+    pub age_years: i32,
+    pub height_cm: f64,
+    pub activity_factor: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TdeeSex {
+    Male,
+}
+
+impl TdeeSex {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Male => "male",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TdeeDataStatus {
+    NoData,
+    LowSample,
+    Normal,
+}
+
+impl TdeeDataStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NoData => "no data",
+            Self::LowSample => "low sample",
+            Self::Normal => "normal",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectionStatus {
     Reached,
@@ -200,6 +260,13 @@ pub fn advice_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
     )
 }
 
+pub fn tdee_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
+    (
+        reference_date - Duration::days(TDEE_WINDOW_DAYS - 1),
+        reference_date,
+    )
+}
+
 pub fn calculate_bmi(weight_kg: f64) -> f64 {
     weight_kg / (HEIGHT_METERS * HEIGHT_METERS)
 }
@@ -218,6 +285,64 @@ pub fn classify_bmi(bmi: f64) -> BmiCategory {
     } else {
         BmiCategory::Obesity
     }
+}
+
+pub fn build_tdee_estimate(records: &[WeightRecord], reference_date: NaiveDate) -> TdeeEstimate {
+    let (start, end) = tdee_range(reference_date);
+    let average_weight_kg = average_between(records, start, end);
+    let sample_count = count_between(records, start, end);
+    let data_status = match sample_count {
+        0 => TdeeDataStatus::NoData,
+        count if count < MIN_NORMAL_TDEE_RECORDS => TdeeDataStatus::LowSample,
+        _ => TdeeDataStatus::Normal,
+    };
+    let basis = tdee_basis(reference_date);
+    let bmr_kcal = average_weight_kg.map(|weight_kg| calculate_male_bmr_kcal(weight_kg, &basis));
+    let tdee_kcal = bmr_kcal.map(|bmr| bmr * basis.activity_factor);
+
+    TdeeEstimate {
+        reference_date,
+        start,
+        end,
+        basis,
+        average_weight_kg,
+        sample_count,
+        data_status,
+        bmr_kcal,
+        tdee_kcal,
+    }
+}
+
+pub fn tdee_basis(reference_date: NaiveDate) -> TdeeBasis {
+    let birth_date = tdee_profile_birth_date();
+    TdeeBasis {
+        sex: TDEE_PROFILE_SEX,
+        birth_date,
+        age_years: age_years_on(birth_date, reference_date),
+        height_cm: TDEE_PROFILE_HEIGHT_CM,
+        activity_factor: TDEE_PROFILE_ACTIVITY_FACTOR,
+    }
+}
+
+pub fn age_years_on(birth_date: NaiveDate, reference_date: NaiveDate) -> i32 {
+    let mut years = reference_date.year() - birth_date.year();
+    if (reference_date.month(), reference_date.day()) < (birth_date.month(), birth_date.day()) {
+        years -= 1;
+    }
+    years
+}
+
+fn tdee_profile_birth_date() -> NaiveDate {
+    NaiveDate::from_ymd_opt(
+        TDEE_PROFILE_BIRTH_YEAR,
+        TDEE_PROFILE_BIRTH_MONTH,
+        TDEE_PROFILE_BIRTH_DAY,
+    )
+    .expect("TDEE profile birth date must be valid")
+}
+
+fn calculate_male_bmr_kcal(weight_kg: f64, basis: &TdeeBasis) -> f64 {
+    10.0 * weight_kg + 6.25 * basis.height_cm - 5.0 * basis.age_years as f64 + 5.0
 }
 
 pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> WeightComparison {
@@ -592,6 +717,80 @@ mod tests {
     fn maps_optional_average_to_optional_bmi() {
         assert_eq!(bmi_for_average(None), None);
         assert!((bmi_for_average(Some(70.0)).unwrap() - 23.388_686).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn calculates_age_after_birthday() {
+        let birth_date = NaiveDate::from_ymd_opt(2001, 3, 6).unwrap();
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+
+        assert_eq!(age_years_on(birth_date, reference_date), 25);
+    }
+
+    #[test]
+    fn calculates_age_before_birthday() {
+        let birth_date = NaiveDate::from_ymd_opt(2001, 3, 6).unwrap();
+        let reference_date = NaiveDate::from_ymd_opt(2026, 3, 5).unwrap();
+
+        assert_eq!(age_years_on(birth_date, reference_date), 24);
+    }
+
+    #[test]
+    fn estimates_tdee_with_normal_sample_count() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+        let records = vec![
+            record("2026-05-19", 70.0),
+            record("2026-05-21", 71.0),
+            record("2026-05-25", 72.0),
+            record("2026-05-18", 90.0),
+        ];
+
+        let estimate = build_tdee_estimate(&records, reference_date);
+
+        assert_eq!(
+            estimate.start,
+            NaiveDate::from_ymd_opt(2026, 5, 19).unwrap()
+        );
+        assert_eq!(estimate.end, reference_date);
+        assert_eq!(estimate.sample_count, 3);
+        assert_eq!(estimate.data_status, TdeeDataStatus::Normal);
+        assert_eq!(estimate.average_weight_kg, Some(71.0));
+        assert_eq!(estimate.basis.sex, TdeeSex::Male);
+        assert_eq!(
+            estimate.basis.birth_date,
+            NaiveDate::from_ymd_opt(2001, 3, 6).unwrap()
+        );
+        assert_eq!(estimate.basis.age_years, 25);
+        assert_eq!(estimate.basis.height_cm, 173.0);
+        assert_eq!(estimate.basis.activity_factor, 1.60);
+        assert!((estimate.bmr_kcal.unwrap() - 1671.25).abs() < 0.000_001);
+        assert!((estimate.tdee_kcal.unwrap() - 2674.0).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn estimates_tdee_with_low_sample_status() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+        let records = vec![record("2026-05-25", 70.0)];
+
+        let estimate = build_tdee_estimate(&records, reference_date);
+
+        assert_eq!(estimate.sample_count, 1);
+        assert_eq!(estimate.data_status, TdeeDataStatus::LowSample);
+        assert_eq!(estimate.average_weight_kg, Some(70.0));
+        assert!(estimate.tdee_kcal.is_some());
+    }
+
+    #[test]
+    fn reports_tdee_no_data_without_estimate() {
+        let reference_date = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
+
+        let estimate = build_tdee_estimate(&[], reference_date);
+
+        assert_eq!(estimate.sample_count, 0);
+        assert_eq!(estimate.data_status, TdeeDataStatus::NoData);
+        assert_eq!(estimate.average_weight_kg, None);
+        assert_eq!(estimate.bmr_kcal, None);
+        assert_eq!(estimate.tdee_kcal, None);
     }
 
     #[test]

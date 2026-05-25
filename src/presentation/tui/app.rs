@@ -1,5 +1,5 @@
 use super::Action;
-use crate::app::use_cases::{self, AdviceResult, CompareWeightsResult, TargetResult};
+use crate::app::use_cases::{self, AdviceResult, CompareWeightsResult, TargetResult, TdeeResult};
 use crate::domain::goals::AdviceGoal;
 use crate::domain::models::WeightRecord;
 use crate::domain::stats::DEFAULT_TARGET_WEIGHT_KG;
@@ -93,6 +93,7 @@ pub(crate) struct App {
     pub(crate) compare: LoadState<CompareWeightsResult>,
     pub(crate) advice: LoadState<AdviceResult>,
     pub(crate) target: LoadState<TargetResult>,
+    pub(crate) tdee: LoadState<TdeeResult>,
     pub(crate) advice_goal: AdviceGoal,
 }
 
@@ -113,6 +114,7 @@ impl App {
             compare: LoadState::NotLoaded,
             advice: LoadState::NotLoaded,
             target: LoadState::NotLoaded,
+            tdee: LoadState::NotLoaded,
             advice_goal: AdviceGoal::Cut,
         }
     }
@@ -127,6 +129,7 @@ impl App {
             Ok(result) => {
                 self.records = result.records;
                 self.clamp_selection();
+                self.load_tdee_quietly(repository).await;
                 self.status = OperationStatus::Idle;
             }
             Err(error) => self.status = OperationStatus::Error(error.to_string()),
@@ -270,20 +273,21 @@ impl App {
 
     async fn refresh(&mut self, repository: &impl WeightRepository) {
         match self.active_view {
-            AnalysisView::Summary => self.refresh_records(repository).await,
+            AnalysisView::Summary => self.refresh_summary(repository).await,
             AnalysisView::Compare => self.load_compare(repository).await,
             AnalysisView::Advice => self.load_advice(repository).await,
             AnalysisView::Target => self.load_target(repository).await,
         }
     }
 
-    async fn refresh_records(&mut self, repository: &impl WeightRepository) {
+    async fn refresh_summary(&mut self, repository: &impl WeightRepository) {
         self.status = OperationStatus::Loading;
         match use_cases::list_weights(repository, RECENT_LIMIT).await {
             Ok(result) => {
                 self.records = result.records;
                 self.clamp_selection();
-                self.status = OperationStatus::Message("refreshed records".to_string());
+                self.load_tdee_quietly(repository).await;
+                self.status = OperationStatus::Message("refreshed summary".to_string());
             }
             Err(error) => self.status = OperationStatus::Error(error.to_string()),
         }
@@ -291,7 +295,9 @@ impl App {
 
     async fn load_active_analysis(&mut self, repository: &impl WeightRepository) {
         match self.active_view {
-            AnalysisView::Summary => {}
+            AnalysisView::Summary if matches!(self.tdee, LoadState::NotLoaded) => {
+                self.load_tdee(repository).await;
+            }
             AnalysisView::Compare if matches!(self.compare, LoadState::NotLoaded) => {
                 self.load_compare(repository).await;
             }
@@ -301,7 +307,10 @@ impl App {
             AnalysisView::Target if matches!(self.target, LoadState::NotLoaded) => {
                 self.load_target(repository).await;
             }
-            AnalysisView::Compare | AnalysisView::Advice | AnalysisView::Target => {}
+            AnalysisView::Summary
+            | AnalysisView::Compare
+            | AnalysisView::Advice
+            | AnalysisView::Target => {}
         }
     }
 
@@ -347,6 +356,25 @@ impl App {
                 self.status = OperationStatus::Message("loaded target estimate".to_string());
             }
             Err(error) => self.target = LoadState::Error(error.to_string()),
+        }
+    }
+
+    pub(crate) async fn load_tdee(&mut self, repository: &impl WeightRepository) {
+        self.tdee = LoadState::Loading;
+        match use_cases::tdee(repository, Some(self.reference_date.to_string())).await {
+            Ok(result) => {
+                self.tdee = LoadState::Ready(result);
+                self.status = OperationStatus::Message("loaded TDEE estimate".to_string());
+            }
+            Err(error) => self.tdee = LoadState::Error(error.to_string()),
+        }
+    }
+
+    async fn load_tdee_quietly(&mut self, repository: &impl WeightRepository) {
+        self.tdee = LoadState::Loading;
+        match use_cases::tdee(repository, Some(self.reference_date.to_string())).await {
+            Ok(result) => self.tdee = LoadState::Ready(result),
+            Err(error) => self.tdee = LoadState::Error(error.to_string()),
         }
     }
 
@@ -434,6 +462,7 @@ impl App {
         self.compare.invalidate();
         self.advice.invalidate();
         self.target.invalidate();
+        self.tdee.invalidate();
     }
 
     fn clamp_selection(&mut self) {
@@ -648,7 +677,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switches_analysis_views_and_loads_compare_advice_and_target() {
+    async fn switches_analysis_views_and_loads_compare_advice_target_then_summary() {
         let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
         let mut app = App::new_with_date(date("2026-05-19"));
 
@@ -663,12 +692,17 @@ mod tests {
         app.handle_action(Action::ToggleField, &repository).await;
         assert_eq!(app.active_view, AnalysisView::Target);
         assert!(matches!(app.target, LoadState::Ready(_)));
+
+        app.handle_action(Action::ToggleField, &repository).await;
+        assert_eq!(app.active_view, AnalysisView::Summary);
+        assert!(matches!(app.tdee, LoadState::Ready(_)));
         assert_eq!(
             repository.calls(),
             [
                 "between:2025-05-19:2026-05-19",
                 "between:2026-04-22:2026-05-19",
-                "between:2026-04-22:2026-05-19"
+                "between:2026-04-22:2026-05-19",
+                "between:2026-05-13:2026-05-19"
             ]
         );
     }
@@ -712,6 +746,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_loads_tdee_when_summary_view_is_active() {
+        let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::Refresh, &repository).await;
+
+        assert!(matches!(app.tdee, LoadState::Ready(_)));
+        assert_eq!(
+            repository.calls(),
+            ["list:30", "between:2026-05-13:2026-05-19"]
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_uses_active_analysis_view() {
         let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
         let mut app = App::new_with_date(date("2026-05-19"));
@@ -728,6 +776,7 @@ mod tests {
             repository.calls(),
             [
                 "list:30",
+                "between:2026-05-13:2026-05-19",
                 "between:2025-05-19:2026-05-19",
                 "between:2026-04-22:2026-05-19",
                 "between:2026-04-22:2026-05-19"
@@ -743,6 +792,7 @@ mod tests {
         app.load_compare(&repository).await;
         app.load_advice(&repository).await;
         app.load_target(&repository).await;
+        app.load_tdee(&repository).await;
 
         app.handle_action(Action::Edit, &repository).await;
         app.handle_action(Action::Input('1'), &repository).await;
@@ -751,5 +801,6 @@ mod tests {
         assert!(matches!(app.compare, LoadState::NotLoaded));
         assert!(matches!(app.advice, LoadState::NotLoaded));
         assert!(matches!(app.target, LoadState::NotLoaded));
+        assert!(matches!(app.tdee, LoadState::NotLoaded));
     }
 }

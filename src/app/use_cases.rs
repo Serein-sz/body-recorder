@@ -1,8 +1,9 @@
 use crate::domain::goals::AdviceGoal;
 use crate::domain::models::WeightRecord;
 use crate::domain::stats::{
-    DietAdvice, DietGoal, TargetProjection, WeightComparison, advice_range, build_diet_advice,
-    build_target_projection, compare_weights, comparison_range,
+    DietAdvice, DietGoal, TargetProjection, TdeeEstimate, WeightComparison, advice_range,
+    build_diet_advice, build_target_projection, build_tdee_estimate, compare_weights,
+    comparison_range, tdee_range,
 };
 use crate::domain::validation::{parse_date, parse_or_today, validate_weight};
 use crate::error::AppResult;
@@ -46,6 +47,11 @@ pub struct AdviceResult {
 #[derive(Debug)]
 pub struct TargetResult {
     pub projection: TargetProjection,
+}
+
+#[derive(Debug)]
+pub struct TdeeResult {
+    pub estimate: TdeeEstimate,
 }
 
 pub async fn add_weight(
@@ -139,6 +145,18 @@ pub async fn target(
     let projection = build_target_projection(&records, reference_date, target_kg);
 
     Ok(TargetResult { projection })
+}
+
+pub async fn tdee(
+    repository: &impl WeightRepository,
+    date: Option<String>,
+) -> AppResult<TdeeResult> {
+    let reference_date = parse_or_today(date)?;
+    let (start, end) = tdee_range(reference_date);
+    let records = repository.list_weights_between(start, end).await?;
+    let estimate = build_tdee_estimate(&records, reference_date);
+
+    Ok(TdeeResult { estimate })
 }
 
 impl From<AdviceGoal> for DietGoal {
@@ -326,5 +344,48 @@ mod tests {
 
         assert_eq!(result.projection.target_kg, 70.0);
         assert_eq!(repository.calls(), ["between:2026-05-01:2026-05-28"]);
+    }
+
+    #[tokio::test]
+    async fn tdee_fetches_latest_seven_day_range_from_repository() {
+        let reference_date = date("2026-05-25");
+        let repository = FakeRepository::new(vec![
+            record(date("2026-05-19"), 70.0),
+            record(date("2026-05-21"), 71.0),
+            record(reference_date, 72.0),
+        ]);
+        let result = tdee(&repository, Some("2026-05-25".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.estimate.reference_date, reference_date);
+        assert_eq!(result.estimate.sample_count, 3);
+        assert_eq!(result.estimate.average_weight_kg, Some(71.0));
+        assert_eq!(repository.calls(), ["between:2026-05-19:2026-05-25"]);
+    }
+
+    #[tokio::test]
+    async fn tdee_returns_low_sample_without_error() {
+        let reference_date = date("2026-05-25");
+        let repository = FakeRepository::new(vec![record(reference_date, 72.0)]);
+        let result = tdee(&repository, Some("2026-05-25".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.estimate.sample_count, 1);
+        assert!(result.estimate.tdee_kcal.is_some());
+        assert_eq!(repository.calls(), ["between:2026-05-19:2026-05-25"]);
+    }
+
+    #[tokio::test]
+    async fn tdee_returns_no_data_without_error() {
+        let repository = FakeRepository::new(Vec::new());
+        let result = tdee(&repository, Some("2026-05-25".to_string()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.estimate.sample_count, 0);
+        assert_eq!(result.estimate.tdee_kcal, None);
+        assert_eq!(repository.calls(), ["between:2026-05-19:2026-05-25"]);
     }
 }

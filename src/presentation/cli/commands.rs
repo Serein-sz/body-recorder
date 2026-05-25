@@ -71,6 +71,12 @@ pub async fn run() -> AppResult<()> {
             print!("{}", output::render_target_projection(&result.projection));
             Ok(())
         }
+        Commands::Tdee { date } => {
+            let repository = SupabaseClient::from_config_file()?;
+            let result = use_cases::tdee(&repository, date).await?;
+            print!("{}", output::render_tdee_estimate(&result.estimate));
+            Ok(())
+        }
         Commands::Tui => {
             let repository = SupabaseClient::from_config_file()?;
             tui::run(&repository).await

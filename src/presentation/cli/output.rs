@@ -2,8 +2,8 @@ use crate::app::use_cases::{AddWeightResult, DeleteWeightResult, UpdateWeightRes
 use crate::domain::models::WeightRecord;
 use crate::domain::stats::{
     AdviceRecommendation, BmiCategory, ComparisonPoint, DataStatus, DietAdvice, PeriodAverage,
-    ProjectionStatus, TargetProjection, TrendAnalysis, bmi_for_average, calculate_bmi,
-    classify_bmi,
+    ProjectionStatus, TargetProjection, TdeeDataStatus, TdeeEstimate, TrendAnalysis,
+    bmi_for_average, calculate_bmi, classify_bmi,
 };
 use ansi_term::ANSIString;
 use ansi_term::Colour::{Green, Red, Yellow};
@@ -250,6 +250,90 @@ pub fn render_target_projection(projection: &TargetProjection) -> String {
     output
 }
 
+pub fn render_tdee_estimate(estimate: &TdeeEstimate) -> String {
+    let mut output = String::new();
+    let title = Style::new().bold().paint("TDEE estimate");
+    writeln!(output, "{title}").unwrap();
+    writeln!(
+        output,
+        "reference date: {}   range: {} to {}",
+        estimate.reference_date, estimate.start, estimate.end
+    )
+    .unwrap();
+    writeln!(output).unwrap();
+
+    writeln!(output, "{}", Style::new().bold().paint("Estimate")).unwrap();
+    match estimate.tdee_kcal {
+        Some(tdee) => {
+            writeln!(output, "{:<16} {:.0} kcal/day", "TDEE", tdee).unwrap();
+            writeln!(
+                output,
+                "{:<16} {}",
+                "data status",
+                paint_tdee_data_status(estimate.data_status)
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "{:<16} {} from {} record(s)",
+                "7-day average",
+                format_average(estimate.average_weight_kg),
+                estimate.sample_count
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "{:<16} {:.0} kcal/day",
+                "BMR",
+                estimate.bmr_kcal.unwrap_or_default()
+            )
+            .unwrap();
+        }
+        None => {
+            writeln!(output, "{:<16} no recent weight data", "TDEE").unwrap();
+            writeln!(
+                output,
+                "{:<16} {}",
+                "data status",
+                paint_tdee_data_status(estimate.data_status)
+            )
+            .unwrap();
+            writeln!(
+                output,
+                "{:<16} {} record(s)",
+                "samples", estimate.sample_count
+            )
+            .unwrap();
+        }
+    }
+    writeln!(output).unwrap();
+
+    writeln!(output, "{}", Style::new().bold().paint("Basis")).unwrap();
+    writeln!(
+        output,
+        "{:<16} {}, {}y, {:.0} cm",
+        "profile",
+        estimate.basis.sex.label(),
+        estimate.basis.age_years,
+        estimate.basis.height_cm
+    )
+    .unwrap();
+    writeln!(output, "{:<16} {}", "birth date", estimate.basis.birth_date).unwrap();
+    writeln!(
+        output,
+        "{:<16} {:.2}",
+        "activity factor", estimate.basis.activity_factor
+    )
+    .unwrap();
+    writeln!(
+        output,
+        "note: this is a formula-based estimate, not a precise prescription."
+    )
+    .unwrap();
+
+    output
+}
+
 fn render_trend_summary(output: &mut String, analysis: &TrendAnalysis) {
     writeln!(output, "{}", Style::new().bold().paint("Trend")).unwrap();
     writeln!(
@@ -382,6 +466,16 @@ fn paint_projection_status(value: ProjectionStatus) -> ANSIString<'static> {
     }
 }
 
+fn paint_tdee_data_status(value: TdeeDataStatus) -> ANSIString<'static> {
+    let text = value.label().to_string();
+
+    match value {
+        TdeeDataStatus::Normal => Green.paint(text),
+        TdeeDataStatus::LowSample => Yellow.paint(text),
+        TdeeDataStatus::NoData => Red.paint(text),
+    }
+}
+
 fn format_remaining(value: Option<f64>) -> String {
     value
         .map(|remaining| {
@@ -444,7 +538,7 @@ mod tests {
     use super::*;
     use crate::domain::stats::{
         ComparisonValueSource, DataStatus, DietGoal, PeriodAverage, ProjectionStatus,
-        TargetProjection, TrendAnalysis,
+        TargetProjection, TdeeBasis, TdeeDataStatus, TdeeEstimate, TdeeSex, TrendAnalysis,
     };
 
     fn date(value: &str) -> NaiveDate {
@@ -673,6 +767,94 @@ mod tests {
         assert!(output.contains("2.50 kg above target"));
         assert!(output.contains("2026-07-03"));
         assert!(output.contains("simple 4-week trend estimate"));
+    }
+
+    #[test]
+    fn renders_tdee_estimate_with_basis_and_status() {
+        let estimate = TdeeEstimate {
+            reference_date: date("2026-05-25"),
+            start: date("2026-05-19"),
+            end: date("2026-05-25"),
+            basis: TdeeBasis {
+                sex: TdeeSex::Male,
+                birth_date: date("2001-03-06"),
+                age_years: 25,
+                height_cm: 173.0,
+                activity_factor: 1.60,
+            },
+            average_weight_kg: Some(71.0),
+            sample_count: 3,
+            data_status: TdeeDataStatus::Normal,
+            bmr_kcal: Some(1671.25),
+            tdee_kcal: Some(2674.0),
+        };
+
+        let output = render_tdee_estimate(&estimate);
+
+        assert!(output.contains("TDEE estimate"));
+        assert!(output.contains("reference date: 2026-05-25"));
+        assert!(output.contains("2674 kcal/day"));
+        assert!(output.contains("71.00 kg from 3 record(s)"));
+        assert!(output.contains("male, 25y, 173 cm"));
+        assert!(output.contains("activity factor"));
+        assert!(output.contains("1.60"));
+        assert!(output.contains("formula-based estimate"));
+    }
+
+    #[test]
+    fn renders_tdee_low_sample_status() {
+        let estimate = TdeeEstimate {
+            reference_date: date("2026-05-25"),
+            start: date("2026-05-19"),
+            end: date("2026-05-25"),
+            basis: TdeeBasis {
+                sex: TdeeSex::Male,
+                birth_date: date("2001-03-06"),
+                age_years: 25,
+                height_cm: 173.0,
+                activity_factor: 1.60,
+            },
+            average_weight_kg: Some(71.0),
+            sample_count: 1,
+            data_status: TdeeDataStatus::LowSample,
+            bmr_kcal: Some(1671.25),
+            tdee_kcal: Some(2674.0),
+        };
+
+        let output = strip_ansi(&render_tdee_estimate(&estimate));
+
+        assert!(output.contains("data status"));
+        assert!(output.contains("low sample"));
+        assert!(output.contains("from 1 record(s)"));
+    }
+
+    #[test]
+    fn renders_tdee_no_data_without_kcal_estimate() {
+        let estimate = TdeeEstimate {
+            reference_date: date("2026-05-25"),
+            start: date("2026-05-19"),
+            end: date("2026-05-25"),
+            basis: TdeeBasis {
+                sex: TdeeSex::Male,
+                birth_date: date("2001-03-06"),
+                age_years: 25,
+                height_cm: 173.0,
+                activity_factor: 1.60,
+            },
+            average_weight_kg: None,
+            sample_count: 0,
+            data_status: TdeeDataStatus::NoData,
+            bmr_kcal: None,
+            tdee_kcal: None,
+        };
+
+        let output = strip_ansi(&render_tdee_estimate(&estimate));
+
+        assert!(output.contains("TDEE"));
+        assert!(output.contains("no recent weight data"));
+        assert!(output.contains("data status"));
+        assert!(output.contains("no data"));
+        assert!(!output.contains("kcal/day"));
     }
 
     #[test]

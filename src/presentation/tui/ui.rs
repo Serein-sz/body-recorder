@@ -1,8 +1,8 @@
 use super::{AnalysisView, App, InputField, LoadState, Mode, OperationStatus};
 use crate::domain::stats::{
     AdviceRecommendation, BmiCategory, ComparisonPoint, ComparisonValueSource, DataStatus,
-    PeriodAverage, ProjectionStatus, TrendAnalysis, TrendClass, analyze_trend, bmi_for_average,
-    calculate_bmi, classify_bmi,
+    PeriodAverage, ProjectionStatus, TdeeDataStatus, TrendAnalysis, TrendClass, analyze_trend,
+    bmi_for_average, calculate_bmi, classify_bmi,
 };
 use crate::presentation::tui::app::advice_goal_label;
 use chrono::NaiveDate;
@@ -125,12 +125,15 @@ fn render_analysis(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect
 
 fn summary_lines(app: &App) -> Vec<Line<'static>> {
     let analysis = analyze_trend(&app.records, app.reference_date);
-    vec![
+    let mut lines = vec![
         Line::from(format!("range: {} to {}", analysis.start, analysis.end)),
         Line::from(format!("data: {}", analysis.data_status.label())),
         trend_line(analysis.trend_kg_per_week, analysis.trend_class),
         short_term_average_line(&analysis),
-    ]
+        Line::from(""),
+    ];
+    lines.extend(tdee_summary_lines(app));
+    lines
 }
 
 fn compare_lines(app: &App) -> Vec<Line<'static>> {
@@ -310,6 +313,64 @@ fn target_lines(app: &App) -> Vec<Line<'static>> {
                     unavailable_style(),
                 ),
             ]
+        }
+    }
+}
+
+fn tdee_summary_lines(app: &App) -> Vec<Line<'static>> {
+    match &app.tdee {
+        LoadState::NotLoaded => vec![Line::styled(
+            "TDEE estimate: press r to load summary data.",
+            unavailable_style(),
+        )],
+        LoadState::Loading => vec![Line::styled("TDEE estimate: loading...", loading_style())],
+        LoadState::Error(message) => {
+            vec![Line::styled(
+                format!("TDEE error: {message}"),
+                error_style(),
+            )]
+        }
+        LoadState::Ready(result) => {
+            let estimate = &result.estimate;
+            let mut lines = vec![
+                Line::styled("TDEE estimate", title_style()),
+                Line::from(vec![
+                    Span::raw("data: "),
+                    Span::styled(
+                        estimate.data_status.label(),
+                        tdee_data_status_style(estimate.data_status),
+                    ),
+                    Span::raw(format!("   samples: {}", estimate.sample_count)),
+                ]),
+            ];
+
+            if let Some(tdee_kcal) = estimate.tdee_kcal {
+                lines.extend([
+                    Line::from(format!(
+                        "estimate: {:.0} kcal/day   7-day avg: {}",
+                        tdee_kcal,
+                        format_optional_kg(estimate.average_weight_kg)
+                    )),
+                    Line::from(format!(
+                        "basis: {} {}y {:.0}cm activity {:.2}",
+                        estimate.basis.sex.label(),
+                        estimate.basis.age_years,
+                        estimate.basis.height_cm,
+                        estimate.basis.activity_factor
+                    )),
+                ]);
+            } else {
+                lines.push(Line::styled(
+                    "no recent weight data available",
+                    unavailable_style(),
+                ));
+            }
+            lines.push(Line::styled(
+                "formula-based estimate, not a precise prescription",
+                unavailable_style(),
+            ));
+
+            lines
         }
     }
 }
@@ -591,6 +652,14 @@ fn data_status_style(status: DataStatus) -> Style {
     }
 }
 
+fn tdee_data_status_style(status: TdeeDataStatus) -> Style {
+    match status {
+        TdeeDataStatus::Normal => favorable_style(),
+        TdeeDataStatus::LowSample => caution_style(),
+        TdeeDataStatus::NoData => error_style(),
+    }
+}
+
 fn projection_status_style(status: ProjectionStatus) -> Style {
     match status {
         ProjectionStatus::Reached | ProjectionStatus::OnTrack => favorable_style(),
@@ -736,12 +805,13 @@ pub(crate) fn render_to_text(app: &App, width: u16, height: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::use_cases::{AdviceResult, CompareWeightsResult, TargetResult};
+    use crate::app::use_cases::{AdviceResult, CompareWeightsResult, TargetResult, TdeeResult};
     use crate::domain::goals::AdviceGoal;
     use crate::domain::models::WeightRecord;
     use crate::domain::stats::{
-        BmiCategory, ComparisonValueSource, DataStatus, DietGoal, ProjectionStatus, TrendClass,
-        build_diet_advice, build_target_projection, compare_weights,
+        BmiCategory, ComparisonValueSource, DataStatus, DietGoal, ProjectionStatus, TdeeDataStatus,
+        TrendClass, build_diet_advice, build_target_projection, build_tdee_estimate,
+        compare_weights,
     };
     use chrono::NaiveDate;
 
@@ -842,6 +912,7 @@ mod tests {
         let output = render_to_text(&app, 120, 28);
 
         assert!(output.contains("Summary [Compare] Advice Target"));
+        assert!(!output.contains("TDEE]"));
     }
 
     #[test]
@@ -945,6 +1016,22 @@ mod tests {
         );
         assert_eq!(
             projection_status_style(ProjectionStatus::AwayFromTarget).fg,
+            Some(Color::Red)
+        );
+    }
+
+    #[test]
+    fn styles_tdee_data_status_semantics() {
+        assert_eq!(
+            tdee_data_status_style(TdeeDataStatus::Normal).fg,
+            Some(Color::Green)
+        );
+        assert_eq!(
+            tdee_data_status_style(TdeeDataStatus::LowSample).fg,
+            Some(Color::Yellow)
+        );
+        assert_eq!(
+            tdee_data_status_style(TdeeDataStatus::NoData).fg,
             Some(Color::Red)
         );
     }
@@ -1117,6 +1204,59 @@ mod tests {
         app.target = LoadState::Error("target failed".to_string());
         let error = render_to_text(&app, 120, 28);
         assert!(error.contains("target failed"));
+    }
+
+    #[test]
+    fn renders_tdee_loaded_state() {
+        let reference_date = date("2026-05-25");
+        let records = vec![
+            record(date("2026-05-19"), 70.0),
+            record(date("2026-05-21"), 71.0),
+            record(reference_date, 72.0),
+        ];
+        let mut app = App::new_with_date(reference_date);
+        app.tdee = LoadState::Ready(TdeeResult {
+            estimate: build_tdee_estimate(&records, reference_date),
+        });
+
+        let output = render_to_text(&app, 120, 34);
+
+        assert!(output.contains("Analysis - Summary"));
+        assert!(output.contains("TDEE estimate"));
+        assert!(output.contains("estimate: 2674 kcal/day"));
+        assert!(output.contains("7-day avg: 71.00 kg"));
+        assert!(output.contains("samples: 3"));
+        assert!(output.contains("male"));
+        assert!(output.contains("activity 1.60"));
+        assert!(output.contains("formula-based estimate"));
+    }
+
+    #[test]
+    fn renders_tdee_low_sample_no_data_loading_and_error_states() {
+        let reference_date = date("2026-05-25");
+        let mut app = App::new_with_date(reference_date);
+        app.tdee = LoadState::Ready(TdeeResult {
+            estimate: build_tdee_estimate(&[record(reference_date, 72.0)], reference_date),
+        });
+
+        let low_sample = render_to_text(&app, 120, 34);
+        assert!(low_sample.contains("data: low sample"));
+        assert!(low_sample.contains("estimate:"));
+
+        app.tdee = LoadState::Ready(TdeeResult {
+            estimate: build_tdee_estimate(&[], reference_date),
+        });
+        let no_data = render_to_text(&app, 120, 34);
+        assert!(no_data.contains("data: no data"));
+        assert!(no_data.contains("no recent weight data available"));
+
+        app.tdee = LoadState::Loading;
+        let loading = render_to_text(&app, 120, 28);
+        assert!(loading.contains("TDEE estimate: loading"));
+
+        app.tdee = LoadState::Error("TDEE failed".to_string());
+        let error = render_to_text(&app, 120, 28);
+        assert!(error.contains("TDEE failed"));
     }
 
     fn advice_records(reference_date: NaiveDate) -> Vec<WeightRecord> {

@@ -58,6 +58,12 @@ pub enum Commands {
         #[arg(long)]
         date: Option<String>,
     },
+    /// Estimate total daily energy expenditure from the latest 7-day weight average.
+    Tdee {
+        /// Reference date for the estimate. Defaults to today.
+        #[arg(long)]
+        date: Option<String>,
+    },
     /// Print the Supabase SQL schema for this tool.
     Schema {
         #[arg(long, value_enum, default_value_t = AccessModel::ServiceRole)]
@@ -144,6 +150,16 @@ mod tests {
         match cli.command {
             Commands::Target { weight_kg, .. } => assert_eq!(weight_kg, 70.0),
             _ => panic!("expected target command"),
+        }
+    }
+
+    #[test]
+    fn accepts_tdee_command_with_optional_date() {
+        let cli = Cli::try_parse_from(["br", "tdee", "--date", "2026-05-25"]).unwrap();
+
+        match cli.command {
+            Commands::Tdee { date } => assert_eq!(date, Some("2026-05-25".to_string())),
+            _ => panic!("expected tdee command"),
         }
     }
 }
