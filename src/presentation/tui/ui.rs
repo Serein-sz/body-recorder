@@ -1,4 +1,5 @@
 use super::{AnalysisView, App, InputField, LoadState, Mode, OperationStatus};
+use crate::domain::models::WeightRecord;
 use crate::domain::stats::{
     AdviceRecommendation, BmiCategory, ComparisonPoint, ComparisonValueSource, DataStatus,
     PeriodAverage, ProjectionStatus, TdeeDataStatus, TrendAnalysis, TrendClass, analyze_trend,
@@ -7,16 +8,23 @@ use crate::domain::stats::{
 use crate::presentation::tui::app::advice_goal_label;
 use chrono::NaiveDate;
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{
+    Axis, Block, BorderType, Borders, Chart, Clear, Dataset, GraphType, Paragraph, Wrap,
+};
 
 const RECORDS_WIDTH_PERCENT: u16 = 44;
 const ANALYSIS_WIDTH_PERCENT: u16 = 56;
 const BMI_VALUE_WIDTH: usize = 10;
 const BMI_CATEGORY_WIDTH: usize = 11;
 const BMI_CELL_WIDTH: usize = BMI_VALUE_WIDTH + BMI_CATEGORY_WIDTH + 1;
+const MIN_SUMMARY_CHART_RECORDS: usize = 2;
+const MIN_SUMMARY_CHART_HEIGHT: u16 = 18;
+const MIN_SUMMARY_CHART_WIDTH: u16 = 48;
+const SUMMARY_CHART_HEIGHT: u16 = 9;
 
 pub(crate) fn render(frame: &mut Frame<'_>, app: &App) {
     let root = Layout::default()
@@ -108,8 +116,13 @@ fn render_records(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect)
 
 fn render_analysis(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
     let title = format!("Analysis - {}", app.active_view.label());
+    if app.active_view == AnalysisView::Summary {
+        render_summary_analysis(frame, app, area, &title);
+        return;
+    }
+
     let lines = match app.active_view {
-        AnalysisView::Summary => summary_lines(app),
+        AnalysisView::Summary => unreachable!(),
         AnalysisView::Compare => compare_lines(app),
         AnalysisView::Advice => advice_lines(app),
         AnalysisView::Target => target_lines(app),
@@ -121,6 +134,34 @@ fn render_analysis(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn render_summary_analysis(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
+    let block = panel(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let show_chart = should_render_summary_chart(app, inner);
+    let chunks = if show_chart {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(SUMMARY_CHART_HEIGHT)])
+            .split(inner)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1)])
+            .split(inner)
+    };
+
+    frame.render_widget(
+        Paragraph::new(summary_lines(app)).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    if show_chart {
+        render_summary_weight_chart(frame, app, chunks[1]);
+    }
 }
 
 fn summary_lines(app: &App) -> Vec<Line<'static>> {
@@ -373,6 +414,45 @@ fn tdee_summary_lines(app: &App) -> Vec<Line<'static>> {
             lines
         }
     }
+}
+
+fn should_render_summary_chart(app: &App, area: Rect) -> bool {
+    app.records.len() >= MIN_SUMMARY_CHART_RECORDS
+        && area.height >= MIN_SUMMARY_CHART_HEIGHT
+        && area.width >= MIN_SUMMARY_CHART_WIDTH
+}
+
+fn render_summary_weight_chart(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(chart) = summary_chart_data(&app.records) else {
+        return;
+    };
+    let datasets = vec![
+        Dataset::default()
+            .name("weight")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Cyan))
+            .data(&chart.points),
+    ];
+    let x_max = chart.points.len().saturating_sub(1) as f64;
+    let y_labels = [format!("{:.1}", chart.y_min), format!("{:.1}", chart.y_max)];
+    let chart_widget = Chart::new(datasets)
+        .block(Block::default().title(Span::styled("Weight trend", title_style())))
+        .x_axis(
+            Axis::default()
+                .style(inactive_style())
+                .bounds([0.0, x_max.max(1.0)])
+                .labels(["old", "new"]),
+        )
+        .y_axis(
+            Axis::default()
+                .style(inactive_style())
+                .bounds([chart.y_min, chart.y_max])
+                .labels(y_labels),
+        )
+        .legend_position(None);
+
+    frame.render_widget(chart_widget, area);
 }
 
 fn render_status(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) {
@@ -770,6 +850,50 @@ fn format_estimated_date(value: Option<NaiveDate>) -> String {
         .unwrap_or_else(|| "n/a".to_string())
 }
 
+#[derive(Debug, PartialEq)]
+struct SummaryChartData {
+    points: Vec<(f64, f64)>,
+    y_min: f64,
+    y_max: f64,
+}
+
+fn ordered_weight_records(records: &[WeightRecord]) -> Vec<&WeightRecord> {
+    let mut ordered: Vec<&WeightRecord> = records.iter().collect();
+    ordered.sort_by_key(|record| record.record_date);
+    ordered
+}
+
+fn summary_chart_data(records: &[WeightRecord]) -> Option<SummaryChartData> {
+    let ordered = ordered_weight_records(records);
+    if ordered.len() < MIN_SUMMARY_CHART_RECORDS {
+        return None;
+    }
+
+    let points: Vec<(f64, f64)> = ordered
+        .iter()
+        .enumerate()
+        .map(|(index, record)| (index as f64, record.weight_kg))
+        .collect();
+    let (min, max) = points
+        .iter()
+        .map(|(_, weight)| *weight)
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), weight| {
+            (min.min(weight), max.max(weight))
+        });
+    let spread = max - min;
+    let padding = if spread <= 0.0 {
+        0.5
+    } else {
+        (spread * 0.1).max(0.2)
+    };
+
+    Some(SummaryChartData {
+        points,
+        y_min: min - padding,
+        y_max: max + padding,
+    })
+}
+
 fn centered_rect(
     area: ratatui::layout::Rect,
     percent_x: u16,
@@ -829,6 +953,47 @@ mod tests {
     }
 
     #[test]
+    fn orders_weight_records_oldest_to_newest_for_charts() {
+        let records = vec![
+            record(date("2026-05-20"), 72.0),
+            record(date("2026-05-18"), 74.0),
+            record(date("2026-05-19"), 73.0),
+        ];
+
+        let ordered = ordered_weight_records(&records);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|record| record.record_date)
+                .collect::<Vec<_>>(),
+            [date("2026-05-18"), date("2026-05-19"), date("2026-05-20")]
+        );
+    }
+
+    #[test]
+    fn skips_chart_data_for_insufficient_records() {
+        let records = vec![record(date("2026-05-20"), 72.25)];
+
+        assert_eq!(summary_chart_data(&records), None);
+    }
+
+    #[test]
+    fn builds_summary_chart_points_and_padded_bounds() {
+        let records = vec![
+            record(date("2026-05-20"), 72.0),
+            record(date("2026-05-18"), 74.0),
+            record(date("2026-05-19"), 73.0),
+        ];
+
+        let chart = summary_chart_data(&records).unwrap();
+
+        assert_eq!(chart.points, [(0.0, 74.0), (1.0, 73.0), (2.0, 72.0)]);
+        assert!((chart.y_min - 71.8).abs() < 0.000_001);
+        assert!((chart.y_max - 74.2).abs() < 0.000_001);
+    }
+
+    #[test]
     fn renders_loaded_records() {
         let mut app = App::new_with_date(date("2026-05-19"));
         app.records = vec![record(date("2026-05-19"), 72.4)];
@@ -839,6 +1004,21 @@ mod tests {
         assert!(output.contains("2026-05-19"));
         assert!(output.contains("72.40 kg"));
         assert!(output.contains("BMI 24.19 normal"));
+    }
+
+    #[test]
+    fn keeps_recent_records_text_only_even_with_chartable_data() {
+        let mut app = App::new_with_date(date("2026-05-20"));
+        app.records = vec![
+            record(date("2026-05-20"), 72.0),
+            record(date("2026-05-19"), 73.0),
+            record(date("2026-05-18"), 74.0),
+        ];
+
+        let output = render_to_text(&app, 100, 28);
+
+        assert!(!output.contains("weight trend"));
+        assert!(output.contains("2026-05-20"));
     }
 
     #[test]
@@ -1111,6 +1291,7 @@ mod tests {
         assert!(output.contains("BMI"));
         assert!(output.contains("normal"));
         assert!(output.contains("direct"));
+        assert!(!output.contains("Weight trend"));
     }
 
     #[test]
@@ -1147,6 +1328,7 @@ mod tests {
         assert!(output.contains("normal"));
         assert!(output.contains("Interpretation"));
         assert!(output.contains("Diet adjustment"));
+        assert!(!output.contains("Weight trend"));
     }
 
     #[test]
@@ -1190,6 +1372,36 @@ mod tests {
         assert!(output.contains("current avg"));
         assert!(output.contains("remaining"));
         assert!(output.contains("estimate"));
+        assert!(!output.contains("Weight trend"));
+    }
+
+    #[test]
+    fn renders_summary_weight_chart_when_data_and_space_allow() {
+        let mut app = App::new_with_date(date("2026-05-20"));
+        app.records = vec![
+            record(date("2026-05-20"), 72.0),
+            record(date("2026-05-19"), 73.0),
+            record(date("2026-05-18"), 74.0),
+        ];
+
+        let output = render_to_text(&app, 120, 34);
+
+        assert!(output.contains("Analysis - Summary"));
+        assert!(output.contains("Weight trend"));
+        assert!(output.contains("7-day average"));
+        assert!(output.contains("TDEE estimate"));
+    }
+
+    #[test]
+    fn keeps_summary_text_only_without_enough_chart_data() {
+        let mut app = App::new_with_date(date("2026-05-20"));
+        app.records = vec![record(date("2026-05-20"), 72.0)];
+
+        let output = render_to_text(&app, 120, 34);
+
+        assert!(!output.contains("Weight trend"));
+        assert!(output.contains("7-day average"));
+        assert!(output.contains("TDEE estimate"));
     }
 
     #[test]
