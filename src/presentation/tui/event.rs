@@ -31,6 +31,8 @@ pub(crate) fn key_event_to_action(key: KeyEvent) -> Option<Action> {
         KeyCode::Char(value) => Some(Action::Input(value)),
         KeyCode::Backspace => Some(Action::Backspace),
         KeyCode::Down => Some(Action::Down),
+        KeyCode::Left => Some(Action::PreviousDate),
+        KeyCode::Right => Some(Action::NextDate),
         KeyCode::Up => Some(Action::Up),
         KeyCode::Enter => Some(Action::Confirm),
         KeyCode::Esc => Some(Action::Cancel),
@@ -86,6 +88,14 @@ mod tests {
         assert_eq!(
             key_event_to_action(key(KeyCode::Char('g'))),
             Some(Action::RotateAdviceGoal)
+        );
+        assert_eq!(
+            key_event_to_action(key(KeyCode::Left)),
+            Some(Action::PreviousDate)
+        );
+        assert_eq!(
+            key_event_to_action(key(KeyCode::Right)),
+            Some(Action::NextDate)
         );
     }
 

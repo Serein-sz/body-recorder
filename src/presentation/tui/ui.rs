@@ -461,7 +461,10 @@ fn render_status(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect) 
             "[tab] view  [g] goal  [r] refresh  [a/e/d] records  [q] quit"
         }
         Mode::Normal => "[tab] view  [r] refresh  [a/e/d] records  [q] quit",
-        Mode::Adding(_) | Mode::Editing(_) => "[tab] field  [enter] save  [esc] cancel",
+        Mode::Adding(_) => {
+            "[tab] field  [left/right] date  [up/down] weight  [enter] save  [esc] cancel"
+        }
+        Mode::Editing(_) => "[up/down] weight  [enter] save  [esc] cancel",
         Mode::ConfirmDelete => "[enter] delete  [esc] cancel",
     };
 
@@ -928,6 +931,7 @@ pub(crate) fn render_to_text(app: &App, width: u16, height: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::app::InputState;
     use super::*;
     use crate::app::use_cases::{AdviceResult, CompareWeightsResult, TargetResult, TdeeResult};
     use crate::domain::goals::AdviceGoal;
@@ -1075,6 +1079,31 @@ mod tests {
         assert!(output.contains("╮"));
         assert!(output.contains("╰"));
         assert!(output.contains("╯"));
+    }
+
+    #[test]
+    fn renders_add_date_arrow_help_only_for_add_form() {
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.mode = Mode::Adding(InputState {
+            date: String::new(),
+            weight: String::new(),
+            field: InputField::Date,
+        });
+
+        let add_output = render_to_text(&app, 100, 28);
+
+        assert!(add_output.contains("[left/right] date"));
+
+        app.mode = Mode::Editing(InputState {
+            date: "2026-05-19".to_string(),
+            weight: "72.40".to_string(),
+            field: InputField::Weight,
+        });
+
+        let edit_output = render_to_text(&app, 100, 28);
+
+        assert!(!edit_output.contains("[left/right] date"));
+        assert!(edit_output.contains("[up/down] weight  [enter] save  [esc] cancel"));
     }
 
     #[test]

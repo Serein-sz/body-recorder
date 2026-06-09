@@ -341,3 +341,75 @@ The TUI SHALL refresh and invalidate Summary TDEE analysis consistently with oth
 #### Scenario: Record data changes
 - **WHEN** the user adds, edits, or deletes a weight record
 - **THEN** previously loaded TDEE analysis is invalidated or reloaded before being shown as current
+
+### Requirement: TUI renders a Summary weight trend chart
+The TUI SHALL render a weight trend chart in the Summary analysis view when enough data and space are available.
+
+#### Scenario: Summary chart data is available
+- **WHEN** the Summary analysis view is rendered with at least two recent weight records and sufficient panel space
+- **THEN** the Summary analysis view displays a weight trend chart derived from the recent records
+- **THEN** the Summary textual trend, BMI, and TDEE details remain visible
+
+#### Scenario: Summary chart cannot be shown
+- **WHEN** the Summary analysis view has fewer than two records or insufficient panel space
+- **THEN** the Summary analysis view keeps its text-only analysis visible
+- **THEN** the TUI does not render a misleading empty chart
+
+### Requirement: TUI keeps non-trend analysis panels text-first
+The TUI SHALL avoid adding charts to analysis panels where the available data is not naturally chart-oriented.
+
+#### Scenario: Recent records panel is rendered
+- **WHEN** the TUI renders the Recent records panel
+- **THEN** the panel remains text-first without adding a chart
+
+#### Scenario: Advice view is rendered
+- **WHEN** the TUI renders the Advice analysis view
+- **THEN** the view remains text-first without adding a chart
+
+#### Scenario: Target view is rendered
+- **WHEN** the TUI renders the Target analysis view
+- **THEN** the view remains text-first without adding a chart
+
+#### Scenario: Compare view is rendered
+- **WHEN** the TUI renders the Compare analysis view
+- **THEN** the view remains table-first without adding a chart in this change
+
+### Requirement: TUI add form supports arrow date selection
+The TUI SHALL allow users to select the add-record date with left and right arrow keys while the add-record date field is active.
+
+#### Scenario: Blank add date moves to previous day
+- **WHEN** the user is adding a record
+- **AND** the date field is active
+- **AND** the date field is blank
+- **AND** the user presses the left arrow key
+- **THEN** the add form date is set to one day before the TUI reference date in `YYYY-MM-DD` format
+- **THEN** no storage write occurs
+
+#### Scenario: Blank add date moves to next day
+- **WHEN** the user is adding a record
+- **AND** the date field is active
+- **AND** the date field is blank
+- **AND** the user presses the right arrow key
+- **THEN** the add form date is set to one day after the TUI reference date in `YYYY-MM-DD` format
+- **THEN** no storage write occurs
+
+#### Scenario: Existing add date moves by one day
+- **WHEN** the user is adding a record
+- **AND** the date field is active
+- **AND** the date field contains a valid date
+- **AND** the user presses the left or right arrow key
+- **THEN** the add form date is adjusted by one day in the corresponding direction
+- **THEN** no storage write occurs
+
+#### Scenario: Invalid typed add date is not changed by arrow selection
+- **WHEN** the user is adding a record
+- **AND** the date field is active
+- **AND** the date field contains an invalid date
+- **AND** the user presses the left or right arrow key
+- **THEN** the add form date remains unchanged
+- **THEN** the TUI remains under user control
+
+#### Scenario: Arrow date selection is scoped to the add date field
+- **WHEN** the user is not adding a record with the date field active
+- **AND** the user presses the left or right arrow key
+- **THEN** the TUI does not modify the add-record date

@@ -8,6 +8,8 @@ pub(crate) enum Action {
     Down,
     Edit,
     Input(char),
+    NextDate,
+    PreviousDate,
     Quit,
     Refresh,
     RotateAdviceGoal,

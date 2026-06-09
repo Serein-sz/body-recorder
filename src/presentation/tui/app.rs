@@ -5,7 +5,7 @@ use crate::domain::models::WeightRecord;
 use crate::domain::stats::DEFAULT_TARGET_WEIGHT_KG;
 use crate::domain::validation::{parse_date, validate_weight};
 use crate::storage::repository::WeightRepository;
-use chrono::{Local, NaiveDate};
+use chrono::{Duration, Local, NaiveDate};
 
 const RECENT_LIMIT: u32 = 30;
 
@@ -166,6 +166,8 @@ impl App {
             Action::ToggleField => self.toggle_field(),
             Action::Backspace => self.backspace(),
             Action::Input(value) => self.input(value),
+            Action::PreviousDate => self.adjust_add_date(-1),
+            Action::NextDate => self.adjust_add_date(1),
             Action::Confirm => self.confirm(repository).await,
             _ => {}
         }
@@ -173,9 +175,13 @@ impl App {
 
     fn start_add(&mut self) {
         self.status = OperationStatus::Idle;
+        let weight = self
+            .latest_record()
+            .map(|record| format!("{:.2}", record.weight_kg))
+            .unwrap_or_default();
         self.mode = Mode::Adding(InputState {
             date: String::new(),
-            weight: String::new(),
+            weight,
             field: InputField::Weight,
         });
     }
@@ -204,14 +210,22 @@ impl App {
     }
 
     fn move_up(&mut self) {
-        if matches!(self.mode, Mode::Normal) && self.selected > 0 {
-            self.selected -= 1;
+        match &mut self.mode {
+            Mode::Normal if self.selected > 0 => self.selected -= 1,
+            Mode::Adding(input) | Mode::Editing(input) if input.field == InputField::Weight => {
+                adjust_weight_input(input, 0.1);
+            }
+            _ => {}
         }
     }
 
     fn move_down(&mut self) {
-        if matches!(self.mode, Mode::Normal) && self.selected + 1 < self.records.len() {
-            self.selected += 1;
+        match &mut self.mode {
+            Mode::Normal if self.selected + 1 < self.records.len() => self.selected += 1,
+            Mode::Adding(input) | Mode::Editing(input) if input.field == InputField::Weight => {
+                adjust_weight_input(input, -0.1);
+            }
+            _ => {}
         }
     }
 
@@ -259,6 +273,26 @@ impl App {
         };
 
         target.pop();
+    }
+
+    fn adjust_add_date(&mut self, days: i64) {
+        let Mode::Adding(input) = &mut self.mode else {
+            return;
+        };
+        if input.field != InputField::Date {
+            return;
+        }
+
+        let base_date = if input.date.trim().is_empty() {
+            self.reference_date
+        } else {
+            match parse_date(input.date.trim()) {
+                Ok(date) => date,
+                Err(_) => return,
+            }
+        };
+
+        input.date = (base_date + Duration::days(days)).to_string();
     }
 
     async fn confirm(&mut self, repository: &impl WeightRepository) {
@@ -458,6 +492,10 @@ impl App {
         self.records.get(self.selected)
     }
 
+    fn latest_record(&self) -> Option<&WeightRecord> {
+        self.records.iter().max_by_key(|record| record.record_date)
+    }
+
     fn invalidate_analysis(&mut self) {
         self.compare.invalidate();
         self.advice.invalidate();
@@ -493,6 +531,17 @@ fn next_advice_goal(goal: AdviceGoal) -> AdviceGoal {
 fn parse_weight_input(value: &str) -> Option<f64> {
     let parsed = value.trim().parse::<f64>().ok()?;
     validate_weight(parsed).ok()
+}
+
+fn adjust_weight_input(input: &mut InputState, delta_kg: f64) {
+    let Some(weight) = parse_weight_input(&input.weight) else {
+        return;
+    };
+
+    let adjusted = weight + delta_kg;
+    if validate_weight(adjusted).is_ok() {
+        input.weight = format!("{adjusted:.2}");
+    }
 }
 
 #[cfg(test)]
@@ -664,6 +713,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_form_prefills_latest_weight_by_record_date() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.records = vec![
+            record(date("2026-05-18"), 72.2),
+            record(date("2026-05-20"), 71.9),
+            record(date("2026-05-19"), 72.0),
+        ];
+
+        app.handle_action(Action::Add, &repository).await;
+
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.weight, "71.90"),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn weight_field_arrows_adjust_by_tenth_kg() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.mode = Mode::Adding(InputState {
+            date: String::new(),
+            weight: "72.00".to_string(),
+            field: InputField::Weight,
+        });
+
+        app.handle_action(Action::Up, &repository).await;
+        app.handle_action(Action::Up, &repository).await;
+        app.handle_action(Action::Down, &repository).await;
+
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.weight, "72.10"),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn weight_arrows_ignore_invalid_or_unfocused_weight_input() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.mode = Mode::Adding(InputState {
+            date: String::new(),
+            weight: "invalid".to_string(),
+            field: InputField::Weight,
+        });
+
+        app.handle_action(Action::Up, &repository).await;
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.weight, "invalid"),
+            _ => panic!("expected adding mode"),
+        }
+
+        app.mode = Mode::Adding(InputState {
+            date: String::new(),
+            weight: "72.00".to_string(),
+            field: InputField::Date,
+        });
+        app.handle_action(Action::Up, &repository).await;
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.weight, "72.00"),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn delete_selected_record_uses_existing_use_case() {
         let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
         let mut app = App::new_with_date(date("2026-05-19"));
@@ -722,6 +840,100 @@ mod tests {
         match app.mode {
             Mode::Adding(input) => assert_eq!(input.field, InputField::Date),
             _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_date_arrows_use_reference_date_when_blank() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::Add, &repository).await;
+        app.handle_action(Action::ToggleField, &repository).await;
+        app.handle_action(Action::PreviousDate, &repository).await;
+
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.date, "2026-05-18"),
+            _ => panic!("expected adding mode"),
+        }
+
+        app.handle_action(Action::NextDate, &repository).await;
+        app.handle_action(Action::NextDate, &repository).await;
+
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.date, "2026-05-20"),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_date_arrows_adjust_valid_existing_date() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.mode = Mode::Adding(InputState {
+            date: "2026-06-01".to_string(),
+            weight: String::new(),
+            field: InputField::Date,
+        });
+
+        app.handle_action(Action::PreviousDate, &repository).await;
+        app.handle_action(Action::PreviousDate, &repository).await;
+        app.handle_action(Action::NextDate, &repository).await;
+
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.date, "2026-05-31"),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_date_arrows_leave_invalid_date_unchanged() {
+        let repository = FakeRepository::new(Vec::new());
+        let mut app = App::new_with_date(date("2026-05-19"));
+        app.mode = Mode::Adding(InputState {
+            date: "2026-99-99".to_string(),
+            weight: String::new(),
+            field: InputField::Date,
+        });
+
+        app.handle_action(Action::NextDate, &repository).await;
+
+        match &app.mode {
+            Mode::Adding(input) => assert_eq!(input.date, "2026-99-99"),
+            _ => panic!("expected adding mode"),
+        }
+        assert!(repository.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn date_arrows_are_scoped_to_add_date_field() {
+        let repository = FakeRepository::new(vec![record(date("2026-05-19"), 72.0)]);
+        let mut app = App::new_with_date(date("2026-05-19"));
+
+        app.handle_action(Action::NextDate, &repository).await;
+        assert!(matches!(app.mode, Mode::Normal));
+
+        app.handle_action(Action::Add, &repository).await;
+        app.handle_action(Action::NextDate, &repository).await;
+        match &app.mode {
+            Mode::Adding(input) => {
+                assert_eq!(input.field, InputField::Weight);
+                assert_eq!(input.date, "");
+            }
+            _ => panic!("expected adding mode"),
+        }
+
+        app.records = vec![record(date("2026-05-19"), 72.0)];
+        app.mode = Mode::Normal;
+        app.handle_action(Action::Edit, &repository).await;
+        app.handle_action(Action::ToggleField, &repository).await;
+        app.handle_action(Action::PreviousDate, &repository).await;
+        match &app.mode {
+            Mode::Editing(input) => assert_eq!(input.date, "2026-05-19"),
+            _ => panic!("expected editing mode"),
         }
         assert!(repository.calls().is_empty());
     }
