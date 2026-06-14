@@ -358,6 +358,29 @@ The TUI SHALL render a weight trend chart in the Summary analysis view when enou
 ### Requirement: TUI keeps non-trend analysis panels text-first
 The TUI SHALL avoid adding charts to analysis panels where the available data is not naturally chart-oriented.
 
+### Requirement: TUI renders fat-loss nutrition targets in Summary analysis
+The TUI SHALL render fat-loss nutrition target data in the Summary analysis view using the shared fat-loss nutrition target calculation.
+
+#### Scenario: Summary nutrition targets use recent average weight
+- **WHEN** the Summary analysis view has a usable recent 7-day average weight
+- **THEN** it displays fat-loss carbohydrate, protein, and fat gram targets calculated from that average
+- **THEN** it labels the weight basis as the recent 7-day average
+- **THEN** it labels the weekly training-duration band as 6-7h
+
+#### Scenario: Summary nutrition targets use latest weight fallback
+- **WHEN** the Summary analysis view does not have a usable recent 7-day average weight
+- **AND** at least one weight record is available
+- **THEN** it displays fat-loss carbohydrate, protein, and fat gram targets calculated from the latest record weight
+- **THEN** it labels the weight basis as latest weight
+
+#### Scenario: Summary nutrition targets are unavailable
+- **WHEN** the Summary analysis view has no usable recent 7-day average weight and no weight records
+- **THEN** it displays that fat-loss nutrition targets are unavailable
+- **THEN** it does not calculate macronutrient targets from missing weight data
+
+#### Scenario: Summary keeps existing context visible
+- **WHEN** the Summary analysis view displays fat-loss nutrition targets
+- **THEN** the existing trend, BMI, TDEE, and eligible chart context remain visible according to their current behavior
 #### Scenario: Recent records panel is rendered
 - **WHEN** the TUI renders the Recent records panel
 - **THEN** the panel remains text-first without adding a chart

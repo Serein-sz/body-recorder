@@ -3,7 +3,7 @@ use crate::domain::models::WeightRecord;
 use crate::domain::stats::{
     AdviceRecommendation, BmiCategory, ComparisonPoint, ComparisonValueSource, DataStatus,
     PeriodAverage, ProjectionStatus, TdeeDataStatus, TrendAnalysis, TrendClass, analyze_trend,
-    bmi_for_average, calculate_bmi, classify_bmi,
+    bmi_for_average, build_default_fat_loss_nutrition_targets, calculate_bmi, classify_bmi,
 };
 use crate::presentation::tui::app::advice_goal_label;
 use chrono::NaiveDate;
@@ -174,6 +174,8 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
     ];
     lines.extend(tdee_summary_lines(app));
+    lines.push(Line::from(""));
+    lines.extend(fat_loss_nutrition_summary_lines(app, &analysis));
     lines
 }
 
@@ -414,6 +416,65 @@ fn tdee_summary_lines(app: &App) -> Vec<Line<'static>> {
             lines
         }
     }
+}
+
+fn fat_loss_nutrition_summary_lines(app: &App, analysis: &TrendAnalysis) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled("Fat loss nutrition", title_style())];
+    let Some(basis) = summary_nutrition_basis(app, analysis) else {
+        lines.push(Line::styled(
+            "targets unavailable: no weight basis",
+            unavailable_style(),
+        ));
+        lines.push(Line::styled(
+            "estimate-oriented targets, not a precise prescription",
+            unavailable_style(),
+        ));
+        return lines;
+    };
+
+    let targets = build_default_fat_loss_nutrition_targets(basis.weight_kg);
+    lines.extend([
+        Line::from(format!(
+            "basis: {} {:.2} kg   training: {}/week",
+            basis.label,
+            basis.weight_kg,
+            targets.training_band.label()
+        )),
+        Line::from(format!(
+            "targets: carbs {}g/day   protein {}g/day   fat {}g/day",
+            targets.carbs_g, targets.protein_g, targets.fat_g
+        )),
+        Line::styled(
+            "estimate-oriented targets, not a precise prescription",
+            unavailable_style(),
+        ),
+    ]);
+    lines
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SummaryNutritionBasis {
+    label: &'static str,
+    weight_kg: f64,
+}
+
+fn summary_nutrition_basis(app: &App, analysis: &TrendAnalysis) -> Option<SummaryNutritionBasis> {
+    analysis
+        .short_term_average
+        .average_kg
+        .map(|weight_kg| SummaryNutritionBasis {
+            label: "recent 7-day average",
+            weight_kg,
+        })
+        .or_else(|| {
+            app.records
+                .iter()
+                .max_by_key(|record| record.record_date)
+                .map(|record| SummaryNutritionBasis {
+                    label: "latest weight",
+                    weight_kg: record.weight_kg,
+                })
+        })
 }
 
 fn should_render_summary_chart(app: &App, area: Rect) -> bool {
@@ -998,6 +1059,58 @@ mod tests {
     }
 
     #[test]
+    fn summary_nutrition_basis_prefers_recent_average() {
+        let reference_date = date("2026-05-25");
+        let mut app = App::new_with_date(reference_date);
+        app.records = vec![
+            record(date("2026-05-19"), 70.0),
+            record(date("2026-05-21"), 71.0),
+            record(reference_date, 72.0),
+        ];
+        let analysis = analyze_trend(&app.records, reference_date);
+
+        let basis = summary_nutrition_basis(&app, &analysis).unwrap();
+
+        assert_eq!(
+            basis,
+            SummaryNutritionBasis {
+                label: "recent 7-day average",
+                weight_kg: 71.0
+            }
+        );
+    }
+
+    #[test]
+    fn summary_nutrition_basis_falls_back_to_latest_weight() {
+        let reference_date = date("2026-05-25");
+        let mut app = App::new_with_date(reference_date);
+        app.records = vec![
+            record(date("2026-05-01"), 70.0),
+            record(date("2026-05-05"), 71.0),
+        ];
+        let analysis = analyze_trend(&app.records, reference_date);
+
+        let basis = summary_nutrition_basis(&app, &analysis).unwrap();
+
+        assert_eq!(
+            basis,
+            SummaryNutritionBasis {
+                label: "latest weight",
+                weight_kg: 71.0
+            }
+        );
+    }
+
+    #[test]
+    fn summary_nutrition_basis_is_unavailable_without_records() {
+        let reference_date = date("2026-05-25");
+        let app = App::new_with_date(reference_date);
+        let analysis = analyze_trend(&app.records, reference_date);
+
+        assert_eq!(summary_nutrition_basis(&app, &analysis), None);
+    }
+
+    #[test]
     fn renders_loaded_records() {
         let mut app = App::new_with_date(date("2026-05-19"));
         app.records = vec![record(date("2026-05-19"), 72.4)];
@@ -1419,6 +1532,56 @@ mod tests {
         assert!(output.contains("Weight trend"));
         assert!(output.contains("7-day average"));
         assert!(output.contains("TDEE estimate"));
+    }
+
+    #[test]
+    fn renders_summary_fat_loss_nutrition_from_recent_average() {
+        let reference_date = date("2026-05-25");
+        let mut app = App::new_with_date(reference_date);
+        app.records = vec![
+            record(date("2026-05-19"), 70.0),
+            record(date("2026-05-21"), 71.0),
+            record(reference_date, 72.0),
+        ];
+
+        let output = render_to_text(&app, 120, 38);
+
+        assert!(output.contains("Fat loss nutrition"));
+        assert!(output.contains("basis: recent 7-day average 71.00 kg"));
+        assert!(output.contains("training: 6-7h/week"));
+        assert!(output.contains("carbs 213g/day"));
+        assert!(output.contains("protein 121g/day"));
+        assert!(output.contains("fat 71g/day"));
+        assert!(output.contains("estimate-oriented targets"));
+        assert!(output.contains("TDEE estimate"));
+    }
+
+    #[test]
+    fn renders_summary_fat_loss_nutrition_from_latest_weight_fallback() {
+        let reference_date = date("2026-05-25");
+        let mut app = App::new_with_date(reference_date);
+        app.records = vec![
+            record(date("2026-05-01"), 70.0),
+            record(date("2026-05-05"), 71.0),
+        ];
+
+        let output = render_to_text(&app, 120, 38);
+
+        assert!(output.contains("basis: latest weight 71.00 kg"));
+        assert!(output.contains("carbs 213g/day"));
+        assert!(output.contains("protein 121g/day"));
+        assert!(output.contains("fat 71g/day"));
+    }
+
+    #[test]
+    fn renders_summary_fat_loss_nutrition_unavailable_without_weight_basis() {
+        let app = App::new_with_date(date("2026-05-25"));
+
+        let output = render_to_text(&app, 120, 38);
+
+        assert!(output.contains("Fat loss nutrition"));
+        assert!(output.contains("targets unavailable: no weight basis"));
+        assert!(!output.contains("carbs 0g/day"));
     }
 
     #[test]

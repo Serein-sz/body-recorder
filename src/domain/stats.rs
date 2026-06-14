@@ -15,6 +15,7 @@ pub const TDEE_PROFILE_BIRTH_MONTH: u32 = 3;
 pub const TDEE_PROFILE_BIRTH_DAY: u32 = 6;
 pub const TDEE_PROFILE_HEIGHT_CM: f64 = 173.0;
 pub const TDEE_PROFILE_ACTIVITY_FACTOR: f64 = 1.60;
+pub const DEFAULT_FAT_LOSS_TRAINING_BAND: WeeklyTrainingBand = WeeklyTrainingBand::SixToSevenHours;
 const TDEE_WINDOW_DAYS: i64 = 7;
 const MIN_NORMAL_TDEE_RECORDS: usize = 3;
 
@@ -127,6 +128,40 @@ pub struct TdeeEstimate {
     pub data_status: TdeeDataStatus,
     pub bmr_kcal: Option<f64>,
     pub tdee_kcal: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeeklyTrainingBand {
+    TwoToThreeHours,
+    FourToFiveHours,
+    SixToSevenHours,
+    EightToNineHours,
+}
+
+impl WeeklyTrainingBand {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TwoToThreeHours => "2-3h",
+            Self::FourToFiveHours => "4-5h",
+            Self::SixToSevenHours => "6-7h",
+            Self::EightToNineHours => "8-9h",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FatLossNutritionFactors {
+    pub carbs_g_per_kg: f64,
+    pub protein_g_per_kg: f64,
+    pub fat_g_per_kg: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FatLossNutritionTargets {
+    pub training_band: WeeklyTrainingBand,
+    pub carbs_g: u32,
+    pub protein_g: u32,
+    pub fat_g: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -313,6 +348,48 @@ pub fn build_tdee_estimate(records: &[WeightRecord], reference_date: NaiveDate) 
     }
 }
 
+pub fn fat_loss_nutrition_factors(training_band: WeeklyTrainingBand) -> FatLossNutritionFactors {
+    match training_band {
+        WeeklyTrainingBand::TwoToThreeHours => FatLossNutritionFactors {
+            carbs_g_per_kg: 2.2,
+            protein_g_per_kg: 1.4,
+            fat_g_per_kg: 0.8,
+        },
+        WeeklyTrainingBand::FourToFiveHours => FatLossNutritionFactors {
+            carbs_g_per_kg: 2.5,
+            protein_g_per_kg: 1.6,
+            fat_g_per_kg: 0.9,
+        },
+        WeeklyTrainingBand::SixToSevenHours => FatLossNutritionFactors {
+            carbs_g_per_kg: 3.0,
+            protein_g_per_kg: 1.7,
+            fat_g_per_kg: 1.0,
+        },
+        WeeklyTrainingBand::EightToNineHours => FatLossNutritionFactors {
+            carbs_g_per_kg: 3.5,
+            protein_g_per_kg: 1.8,
+            fat_g_per_kg: 1.0,
+        },
+    }
+}
+
+pub fn build_fat_loss_nutrition_targets(
+    weight_kg: f64,
+    training_band: WeeklyTrainingBand,
+) -> FatLossNutritionTargets {
+    let factors = fat_loss_nutrition_factors(training_band);
+    FatLossNutritionTargets {
+        training_band,
+        carbs_g: grams_from_factor(weight_kg, factors.carbs_g_per_kg),
+        protein_g: grams_from_factor(weight_kg, factors.protein_g_per_kg),
+        fat_g: grams_from_factor(weight_kg, factors.fat_g_per_kg),
+    }
+}
+
+pub fn build_default_fat_loss_nutrition_targets(weight_kg: f64) -> FatLossNutritionTargets {
+    build_fat_loss_nutrition_targets(weight_kg, DEFAULT_FAT_LOSS_TRAINING_BAND)
+}
+
 pub fn tdee_basis(reference_date: NaiveDate) -> TdeeBasis {
     let birth_date = tdee_profile_birth_date();
     TdeeBasis {
@@ -343,6 +420,10 @@ fn tdee_profile_birth_date() -> NaiveDate {
 
 fn calculate_male_bmr_kcal(weight_kg: f64, basis: &TdeeBasis) -> f64 {
     10.0 * weight_kg + 6.25 * basis.height_cm - 5.0 * basis.age_years as f64 + 5.0
+}
+
+fn grams_from_factor(weight_kg: f64, grams_per_kg: f64) -> u32 {
+    (weight_kg * grams_per_kg).round() as u32
 }
 
 pub fn compare_weights(records: &[WeightRecord], reference_date: NaiveDate) -> WeightComparison {
@@ -791,6 +872,77 @@ mod tests {
         assert_eq!(estimate.average_weight_kg, None);
         assert_eq!(estimate.bmr_kcal, None);
         assert_eq!(estimate.tdee_kcal, None);
+    }
+
+    #[test]
+    fn calculates_fat_loss_nutrition_targets_for_all_training_bands() {
+        let cases = [
+            (
+                WeeklyTrainingBand::TwoToThreeHours,
+                "2-3h",
+                FatLossNutritionTargets {
+                    training_band: WeeklyTrainingBand::TwoToThreeHours,
+                    carbs_g: 154,
+                    protein_g: 98,
+                    fat_g: 56,
+                },
+            ),
+            (
+                WeeklyTrainingBand::FourToFiveHours,
+                "4-5h",
+                FatLossNutritionTargets {
+                    training_band: WeeklyTrainingBand::FourToFiveHours,
+                    carbs_g: 175,
+                    protein_g: 112,
+                    fat_g: 63,
+                },
+            ),
+            (
+                WeeklyTrainingBand::SixToSevenHours,
+                "6-7h",
+                FatLossNutritionTargets {
+                    training_band: WeeklyTrainingBand::SixToSevenHours,
+                    carbs_g: 210,
+                    protein_g: 119,
+                    fat_g: 70,
+                },
+            ),
+            (
+                WeeklyTrainingBand::EightToNineHours,
+                "8-9h",
+                FatLossNutritionTargets {
+                    training_band: WeeklyTrainingBand::EightToNineHours,
+                    carbs_g: 245,
+                    protein_g: 126,
+                    fat_g: 70,
+                },
+            ),
+        ];
+
+        for (training_band, label, expected) in cases {
+            assert_eq!(training_band.label(), label);
+            assert_eq!(
+                build_fat_loss_nutrition_targets(70.0, training_band),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn default_fat_loss_nutrition_profile_uses_six_to_seven_hours() {
+        let targets = build_default_fat_loss_nutrition_targets(70.0);
+        let factors = fat_loss_nutrition_factors(DEFAULT_FAT_LOSS_TRAINING_BAND);
+
+        assert_eq!(
+            DEFAULT_FAT_LOSS_TRAINING_BAND,
+            WeeklyTrainingBand::SixToSevenHours
+        );
+        assert_eq!(factors.carbs_g_per_kg, 3.0);
+        assert_eq!(factors.protein_g_per_kg, 1.7);
+        assert_eq!(factors.fat_g_per_kg, 1.0);
+        assert_eq!(targets.carbs_g, 210);
+        assert_eq!(targets.protein_g, 119);
+        assert_eq!(targets.fat_g, 70);
     }
 
     #[test]
