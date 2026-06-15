@@ -230,6 +230,7 @@ mod tests {
         let client = SupabaseClient::new(Config {
             supabase_url: "https://example.supabase.co".to_string(),
             service_role_key: "test-key".to_string(),
+            profile: Default::default(),
         })
         .unwrap();
 

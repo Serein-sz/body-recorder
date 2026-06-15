@@ -1,5 +1,5 @@
 use crate::domain::goals::AdviceGoal;
-use crate::domain::models::WeightRecord;
+use crate::domain::models::{UserProfile, WeightRecord};
 use crate::domain::stats::{
     DietAdvice, DietGoal, TargetProjection, TdeeEstimate, WeightComparison, advice_range,
     build_diet_advice, build_target_projection, build_tdee_estimate, compare_weights,
@@ -149,12 +149,13 @@ pub async fn target(
 
 pub async fn tdee(
     repository: &impl WeightRepository,
+    profile: &UserProfile,
     date: Option<String>,
 ) -> AppResult<TdeeResult> {
     let reference_date = parse_or_today(date)?;
     let (start, end) = tdee_range(reference_date);
     let records = repository.list_weights_between(start, end).await?;
-    let estimate = build_tdee_estimate(&records, reference_date);
+    let estimate = build_tdee_estimate(&records, reference_date, profile);
 
     Ok(TdeeResult { estimate })
 }
@@ -354,7 +355,7 @@ mod tests {
             record(date("2026-05-21"), 71.0),
             record(reference_date, 72.0),
         ]);
-        let result = tdee(&repository, Some("2026-05-25".to_string()))
+        let result = tdee(&repository, &Default::default(), Some("2026-05-25".to_string()))
             .await
             .unwrap();
 
@@ -368,7 +369,7 @@ mod tests {
     async fn tdee_returns_low_sample_without_error() {
         let reference_date = date("2026-05-25");
         let repository = FakeRepository::new(vec![record(reference_date, 72.0)]);
-        let result = tdee(&repository, Some("2026-05-25".to_string()))
+        let result = tdee(&repository, &Default::default(), Some("2026-05-25".to_string()))
             .await
             .unwrap();
 
@@ -380,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn tdee_returns_no_data_without_error() {
         let repository = FakeRepository::new(Vec::new());
-        let result = tdee(&repository, Some("2026-05-25".to_string()))
+        let result = tdee(&repository, &Default::default(), Some("2026-05-25".to_string()))
             .await
             .unwrap();
 

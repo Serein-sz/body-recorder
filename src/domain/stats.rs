@@ -1,4 +1,4 @@
-use crate::domain::models::WeightRecord;
+use crate::domain::models::{UserProfile, WeightRecord};
 use chrono::{Datelike, Duration, NaiveDate};
 
 const POINT_WINDOW_DAYS: i64 = 7;
@@ -7,15 +7,6 @@ const ADVICE_WINDOW_DAYS: i64 = 28;
 const ADVICE_ENDPOINT_DAYS: i64 = 7;
 const MIN_ADVICE_RECORDS: usize = 10;
 const MIN_ENDPOINT_RECORDS: usize = 3;
-pub const HEIGHT_METERS: f64 = 1.73;
-pub const DEFAULT_TARGET_WEIGHT_KG: f64 = 70.0;
-pub const TDEE_PROFILE_SEX: TdeeSex = TdeeSex::Male;
-pub const TDEE_PROFILE_BIRTH_YEAR: i32 = 2001;
-pub const TDEE_PROFILE_BIRTH_MONTH: u32 = 3;
-pub const TDEE_PROFILE_BIRTH_DAY: u32 = 6;
-pub const TDEE_PROFILE_HEIGHT_CM: f64 = 173.0;
-pub const TDEE_PROFILE_ACTIVITY_FACTOR: f64 = 1.60;
-pub const DEFAULT_FAT_LOSS_TRAINING_BAND: WeeklyTrainingBand = WeeklyTrainingBand::SixToSevenHours;
 const TDEE_WINDOW_DAYS: i64 = 7;
 const MIN_NORMAL_TDEE_RECORDS: usize = 3;
 
@@ -302,12 +293,13 @@ pub fn tdee_range(reference_date: NaiveDate) -> (NaiveDate, NaiveDate) {
     )
 }
 
-pub fn calculate_bmi(weight_kg: f64) -> f64 {
-    weight_kg / (HEIGHT_METERS * HEIGHT_METERS)
+pub fn calculate_bmi(weight_kg: f64, height_cm: f64) -> f64 {
+    let height_m = height_cm / 100.0;
+    weight_kg / (height_m * height_m)
 }
 
-pub fn bmi_for_average(average_kg: Option<f64>) -> Option<f64> {
-    average_kg.map(calculate_bmi)
+pub fn bmi_for_average(average_kg: Option<f64>, height_cm: f64) -> Option<f64> {
+    average_kg.map(|kg| calculate_bmi(kg, height_cm))
 }
 
 pub fn classify_bmi(bmi: f64) -> BmiCategory {
@@ -322,7 +314,11 @@ pub fn classify_bmi(bmi: f64) -> BmiCategory {
     }
 }
 
-pub fn build_tdee_estimate(records: &[WeightRecord], reference_date: NaiveDate) -> TdeeEstimate {
+pub fn build_tdee_estimate(
+    records: &[WeightRecord],
+    reference_date: NaiveDate,
+    profile: &UserProfile,
+) -> TdeeEstimate {
     let (start, end) = tdee_range(reference_date);
     let average_weight_kg = average_between(records, start, end);
     let sample_count = count_between(records, start, end);
@@ -331,7 +327,7 @@ pub fn build_tdee_estimate(records: &[WeightRecord], reference_date: NaiveDate) 
         count if count < MIN_NORMAL_TDEE_RECORDS => TdeeDataStatus::LowSample,
         _ => TdeeDataStatus::Normal,
     };
-    let basis = tdee_basis(reference_date);
+    let basis = tdee_basis(reference_date, profile);
     let bmr_kcal = average_weight_kg.map(|weight_kg| calculate_male_bmr_kcal(weight_kg, &basis));
     let tdee_kcal = bmr_kcal.map(|bmr| bmr * basis.activity_factor);
 
@@ -386,18 +382,30 @@ pub fn build_fat_loss_nutrition_targets(
     }
 }
 
-pub fn build_default_fat_loss_nutrition_targets(weight_kg: f64) -> FatLossNutritionTargets {
-    build_fat_loss_nutrition_targets(weight_kg, DEFAULT_FAT_LOSS_TRAINING_BAND)
+pub fn build_default_fat_loss_nutrition_targets(
+    weight_kg: f64,
+    training_band: &str,
+) -> FatLossNutritionTargets {
+    build_fat_loss_nutrition_targets(weight_kg, parse_training_band(training_band))
 }
 
-pub fn tdee_basis(reference_date: NaiveDate) -> TdeeBasis {
-    let birth_date = tdee_profile_birth_date();
+pub fn tdee_basis(reference_date: NaiveDate, profile: &UserProfile) -> TdeeBasis {
+    let birth_date = profile.birth_date;
     TdeeBasis {
-        sex: TDEE_PROFILE_SEX,
+        sex: TdeeSex::Male,
         birth_date,
         age_years: age_years_on(birth_date, reference_date),
-        height_cm: TDEE_PROFILE_HEIGHT_CM,
-        activity_factor: TDEE_PROFILE_ACTIVITY_FACTOR,
+        height_cm: profile.height_cm,
+        activity_factor: profile.activity_factor,
+    }
+}
+
+fn parse_training_band(s: &str) -> WeeklyTrainingBand {
+    match s {
+        "two_to_three_hours" => WeeklyTrainingBand::TwoToThreeHours,
+        "four_to_five_hours" => WeeklyTrainingBand::FourToFiveHours,
+        "eight_to_nine_hours" => WeeklyTrainingBand::EightToNineHours,
+        _ => WeeklyTrainingBand::SixToSevenHours,
     }
 }
 
@@ -407,15 +415,6 @@ pub fn age_years_on(birth_date: NaiveDate, reference_date: NaiveDate) -> i32 {
         years -= 1;
     }
     years
-}
-
-fn tdee_profile_birth_date() -> NaiveDate {
-    NaiveDate::from_ymd_opt(
-        TDEE_PROFILE_BIRTH_YEAR,
-        TDEE_PROFILE_BIRTH_MONTH,
-        TDEE_PROFILE_BIRTH_DAY,
-    )
-    .expect("TDEE profile birth date must be valid")
 }
 
 fn calculate_male_bmr_kcal(weight_kg: f64, basis: &TdeeBasis) -> f64 {
@@ -778,7 +777,7 @@ mod tests {
 
     #[test]
     fn calculates_bmi_from_fixed_height() {
-        let bmi = calculate_bmi(70.0);
+        let bmi = calculate_bmi(70.0, 173.0);
 
         assert!((bmi - 23.388_686).abs() < 0.000_001);
         assert_eq!(format!("{bmi:.2}"), "23.39");
@@ -796,8 +795,8 @@ mod tests {
 
     #[test]
     fn maps_optional_average_to_optional_bmi() {
-        assert_eq!(bmi_for_average(None), None);
-        assert!((bmi_for_average(Some(70.0)).unwrap() - 23.388_686).abs() < 0.000_001);
+        assert_eq!(bmi_for_average(None, 173.0), None);
+        assert!((bmi_for_average(Some(70.0), 173.0).unwrap() - 23.388_686).abs() < 0.000_001);
     }
 
     #[test]
@@ -826,7 +825,7 @@ mod tests {
             record("2026-05-18", 90.0),
         ];
 
-        let estimate = build_tdee_estimate(&records, reference_date);
+        let estimate = build_tdee_estimate(&records, reference_date, &UserProfile::default());
 
         assert_eq!(
             estimate.start,
@@ -853,7 +852,7 @@ mod tests {
         let reference_date = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
         let records = vec![record("2026-05-25", 70.0)];
 
-        let estimate = build_tdee_estimate(&records, reference_date);
+        let estimate = build_tdee_estimate(&records, reference_date, &UserProfile::default());
 
         assert_eq!(estimate.sample_count, 1);
         assert_eq!(estimate.data_status, TdeeDataStatus::LowSample);
@@ -865,7 +864,7 @@ mod tests {
     fn reports_tdee_no_data_without_estimate() {
         let reference_date = NaiveDate::from_ymd_opt(2026, 5, 25).unwrap();
 
-        let estimate = build_tdee_estimate(&[], reference_date);
+        let estimate = build_tdee_estimate(&[], reference_date, &UserProfile::default());
 
         assert_eq!(estimate.sample_count, 0);
         assert_eq!(estimate.data_status, TdeeDataStatus::NoData);
@@ -930,13 +929,9 @@ mod tests {
 
     #[test]
     fn default_fat_loss_nutrition_profile_uses_six_to_seven_hours() {
-        let targets = build_default_fat_loss_nutrition_targets(70.0);
-        let factors = fat_loss_nutrition_factors(DEFAULT_FAT_LOSS_TRAINING_BAND);
+        let targets = build_default_fat_loss_nutrition_targets(70.0, "six_to_seven_hours");
+        let factors = fat_loss_nutrition_factors(WeeklyTrainingBand::SixToSevenHours);
 
-        assert_eq!(
-            DEFAULT_FAT_LOSS_TRAINING_BAND,
-            WeeklyTrainingBand::SixToSevenHours
-        );
         assert_eq!(factors.carbs_g_per_kg, 3.0);
         assert_eq!(factors.protein_g_per_kg, 1.7);
         assert_eq!(factors.fat_g_per_kg, 1.0);

@@ -22,7 +22,7 @@ pub fn render_add_weight(result: &AddWeightResult) -> String {
     )
 }
 
-pub fn render_list_weights(records: &[WeightRecord]) -> String {
+pub fn render_list_weights(records: &[WeightRecord], height_cm: f64) -> String {
     if records.is_empty() {
         return "no weight records found\n".to_string();
     }
@@ -34,7 +34,7 @@ pub fn render_list_weights(records: &[WeightRecord]) -> String {
             "{} {:.2} kg  {}",
             record.record_date,
             record.weight_kg,
-            format_bmi(Some(calculate_bmi(record.weight_kg)))
+            format_bmi(Some(calculate_bmi(record.weight_kg, height_cm)))
         )
         .unwrap();
     }
@@ -64,6 +64,7 @@ pub fn render_comparison(
     total_records: usize,
     recent: &PeriodAverage,
     points: &[ComparisonPoint],
+    height_cm: f64,
 ) -> String {
     let mut output = String::new();
     let title = Style::new().bold().paint("Weight comparison");
@@ -92,7 +93,7 @@ pub fn render_comparison(
         "{:<18} {:>10} {} {:>8}  {} to {}",
         recent.label,
         format_average(recent.average_kg),
-        format_bmi_cell(bmi_for_average(recent.average_kg)),
+        format_bmi_cell(bmi_for_average(recent.average_kg, height_cm)),
         recent.sample_count,
         recent.start,
         recent.end
@@ -131,7 +132,7 @@ pub fn render_comparison(
             point.label,
             point.target_date,
             format_average(point.average_kg),
-            format_bmi_cell(bmi_for_average(point.average_kg)),
+            format_bmi_cell(bmi_for_average(point.average_kg, height_cm)),
             delta,
             point.sample_count,
             point.value_source.label(),
@@ -145,7 +146,7 @@ pub fn render_comparison(
     output
 }
 
-pub fn render_advice(advice: &DietAdvice) -> String {
+pub fn render_advice(advice: &DietAdvice, height_cm: f64) -> String {
     let mut output = String::new();
     let title = Style::new().bold().paint("Diet advice");
     writeln!(output, "{title}").unwrap();
@@ -159,7 +160,7 @@ pub fn render_advice(advice: &DietAdvice) -> String {
     .unwrap();
     writeln!(output).unwrap();
 
-    render_trend_summary(&mut output, &advice.analysis);
+    render_trend_summary(&mut output, &advice.analysis, height_cm);
     writeln!(output).unwrap();
 
     writeln!(output, "{}", Style::new().bold().paint("Interpretation")).unwrap();
@@ -197,7 +198,7 @@ pub fn render_advice(advice: &DietAdvice) -> String {
     output
 }
 
-pub fn render_target_projection(projection: &TargetProjection) -> String {
+pub fn render_target_projection(projection: &TargetProjection, height_cm: f64) -> String {
     let mut output = String::new();
     let title = Style::new().bold().paint("Target estimate");
     writeln!(output, "{title}").unwrap();
@@ -209,7 +210,7 @@ pub fn render_target_projection(projection: &TargetProjection) -> String {
     .unwrap();
     writeln!(output).unwrap();
 
-    render_trend_summary(&mut output, &projection.analysis);
+    render_trend_summary(&mut output, &projection.analysis, height_cm);
     writeln!(output).unwrap();
 
     writeln!(output, "{}", Style::new().bold().paint("Projection")).unwrap();
@@ -334,7 +335,7 @@ pub fn render_tdee_estimate(estimate: &TdeeEstimate) -> String {
     output
 }
 
-fn render_trend_summary(output: &mut String, analysis: &TrendAnalysis) {
+fn render_trend_summary(output: &mut String, analysis: &TrendAnalysis, height_cm: f64) {
     writeln!(output, "{}", Style::new().bold().paint("Trend")).unwrap();
     writeln!(
         output,
@@ -372,7 +373,7 @@ fn render_trend_summary(output: &mut String, analysis: &TrendAnalysis) {
         "7-day average",
         format_average(analysis.short_term_average.average_kg),
         analysis.short_term_average.sample_count,
-        format_bmi(bmi_for_average(analysis.short_term_average.average_kg))
+        format_bmi(bmi_for_average(analysis.short_term_average.average_kg, height_cm))
     )
     .unwrap();
 }
@@ -556,12 +557,12 @@ mod tests {
 
     #[test]
     fn renders_empty_list_message() {
-        assert_eq!(render_list_weights(&[]), "no weight records found\n");
+        assert_eq!(render_list_weights(&[], 173.0), "no weight records found\n");
     }
 
     #[test]
     fn renders_weight_records_in_existing_text_shape() {
-        let output = render_list_weights(&[record("2026-05-14", 72.456)]);
+        let output = render_list_weights(&[record("2026-05-14", 72.456)], 173.0);
 
         assert!(output.contains("2026-05-14 72.46 kg  BMI 24.21"));
         assert!(output.contains("normal"));
@@ -601,7 +602,7 @@ mod tests {
             value_source: ComparisonValueSource::Filled,
         }];
 
-        let output = render_comparison(date("2026-05-14"), 4, &recent, &points);
+        let output = render_comparison(date("2026-05-14"), 4, &recent, &points, 173.0);
 
         assert!(output.contains("source"));
         assert!(output.contains("filled"));
@@ -652,7 +653,7 @@ mod tests {
             },
         ];
 
-        let output = strip_ansi(&render_comparison(date("2026-05-14"), 4, &recent, &points));
+        let output = strip_ansi(&render_comparison(date("2026-05-14"), 4, &recent, &points, 173.0));
         let header = output
             .lines()
             .find(|line| line.contains("period") && line.contains("source"))
@@ -689,7 +690,7 @@ mod tests {
             value_source: ComparisonValueSource::Missing,
         }];
 
-        let output = render_comparison(date("2026-05-14"), 0, &recent, &points);
+        let output = render_comparison(date("2026-05-14"), 0, &recent, &points, 173.0);
 
         assert!(output.contains("BMI n/a"));
         assert!(!output.contains("underweight"));
@@ -722,7 +723,7 @@ mod tests {
             },
         };
 
-        let output = render_advice(&advice);
+        let output = render_advice(&advice, 173.0);
 
         assert!(output.contains("Diet advice"));
         assert!(output.contains("7-day average"));
@@ -759,7 +760,7 @@ mod tests {
             },
         };
 
-        let output = render_target_projection(&projection);
+        let output = render_target_projection(&projection, 173.0);
 
         assert!(output.contains("Target estimate"));
         assert!(output.contains("target: 70.00 kg"));

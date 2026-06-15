@@ -1,6 +1,5 @@
 use crate::domain::goals as domain_goals;
 use crate::domain::schema as domain_schema;
-use crate::domain::stats::DEFAULT_TARGET_WEIGHT_KG;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -19,6 +18,24 @@ pub enum Commands {
         url: String,
         #[arg(long)]
         key: String,
+        /// Height in centimeters.
+        #[arg(long, default_value_t = 173.0)]
+        height_cm: f64,
+        /// Sex for BMR calculation (male).
+        #[arg(long, default_value = "male")]
+        sex: String,
+        /// Date of birth (YYYY-MM-DD).
+        #[arg(long, default_value = "2001-03-06")]
+        birth_date: String,
+        /// Activity factor for TDEE (1.2–1.9).
+        #[arg(long, default_value_t = 1.60)]
+        activity_factor: f64,
+        /// Target body weight in kilograms.
+        #[arg(long, default_value_t = 70.0)]
+        target_weight_kg: f64,
+        /// Weekly training band (two_to_three_hours, four_to_five_hours, six_to_seven_hours, eight_to_nine_hours).
+        #[arg(long, default_value = "six_to_seven_hours")]
+        fat_loss_training_band: String,
     },
     /// Add or replace a weight record for one day.
     Add {
@@ -52,7 +69,7 @@ pub enum Commands {
     /// Estimate progress toward a target weight from the recent 4-week trend.
     Target {
         /// Target body weight in kilograms. Defaults to 70.0.
-        #[arg(long, default_value_t = DEFAULT_TARGET_WEIGHT_KG)]
+        #[arg(long, default_value_t = 70.0)]
         weight_kg: f64,
         /// Reference date for the estimate. Defaults to today.
         #[arg(long)]

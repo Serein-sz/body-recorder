@@ -1,9 +1,9 @@
 use super::Action;
 use crate::app::use_cases::{self, AdviceResult, CompareWeightsResult, TargetResult, TdeeResult};
 use crate::domain::goals::AdviceGoal;
-use crate::domain::models::WeightRecord;
-use crate::domain::stats::DEFAULT_TARGET_WEIGHT_KG;
+use crate::domain::models::{UserProfile, WeightRecord};
 use crate::domain::validation::{parse_date, validate_weight};
+use crate::storage::config::read_config;
 use crate::storage::repository::WeightRepository;
 use chrono::{Duration, Local, NaiveDate};
 
@@ -95,11 +95,15 @@ pub(crate) struct App {
     pub(crate) target: LoadState<TargetResult>,
     pub(crate) tdee: LoadState<TdeeResult>,
     pub(crate) advice_goal: AdviceGoal,
+    pub(crate) profile: UserProfile,
 }
 
 impl App {
     pub(crate) fn new() -> Self {
-        Self::new_with_date(Local::now().date_naive())
+        let profile = read_config().map(|c| c.profile).unwrap_or_default();
+        let mut app = Self::new_with_date(Local::now().date_naive());
+        app.profile = profile;
+        app
     }
 
     pub(crate) fn new_with_date(reference_date: NaiveDate) -> Self {
@@ -116,6 +120,7 @@ impl App {
             target: LoadState::NotLoaded,
             tdee: LoadState::NotLoaded,
             advice_goal: AdviceGoal::Cut,
+            profile: UserProfile::default(),
         }
     }
 
@@ -380,7 +385,7 @@ impl App {
         self.target = LoadState::Loading;
         match use_cases::target(
             repository,
-            DEFAULT_TARGET_WEIGHT_KG,
+            self.profile.target_weight_kg,
             Some(self.reference_date.to_string()),
         )
         .await
@@ -395,7 +400,7 @@ impl App {
 
     pub(crate) async fn load_tdee(&mut self, repository: &impl WeightRepository) {
         self.tdee = LoadState::Loading;
-        match use_cases::tdee(repository, Some(self.reference_date.to_string())).await {
+        match use_cases::tdee(repository, &self.profile, Some(self.reference_date.to_string())).await {
             Ok(result) => {
                 self.tdee = LoadState::Ready(result);
                 self.status = OperationStatus::Message("loaded TDEE estimate".to_string());
@@ -406,7 +411,7 @@ impl App {
 
     async fn load_tdee_quietly(&mut self, repository: &impl WeightRepository) {
         self.tdee = LoadState::Loading;
-        match use_cases::tdee(repository, Some(self.reference_date.to_string())).await {
+        match use_cases::tdee(repository, &self.profile, Some(self.reference_date.to_string())).await {
             Ok(result) => self.tdee = LoadState::Ready(result),
             Err(error) => self.tdee = LoadState::Error(error.to_string()),
         }

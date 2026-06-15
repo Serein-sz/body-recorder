@@ -7,11 +7,12 @@ use std::path::PathBuf;
 const APP_DIR: &str = "body-recorder";
 const CONFIG_FILE: &str = "config.json";
 
-pub fn init_config(url: String, key: String) -> AppResult<PathBuf> {
+pub fn init_config(url: String, key: String, profile: crate::domain::models::UserProfile) -> AppResult<PathBuf> {
     let url = normalize_supabase_url(&url)?;
     let config = Config {
         supabase_url: url,
         service_role_key: key,
+        profile,
     };
     let path = config_path()?;
 
@@ -37,8 +38,8 @@ pub fn read_config() -> AppResult<Config> {
 }
 
 fn config_path() -> AppResult<PathBuf> {
-    let dir = dirs::config_dir().ok_or(AppError::ConfigDirUnavailable)?;
-    Ok(dir.join(APP_DIR).join(CONFIG_FILE))
+    let home = dirs::home_dir().ok_or(AppError::ConfigDirUnavailable)?;
+    Ok(home.join(".config").join(APP_DIR).join(CONFIG_FILE))
 }
 
 pub fn normalize_supabase_url(raw: &str) -> AppResult<String> {

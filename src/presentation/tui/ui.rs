@@ -87,7 +87,7 @@ fn render_records(frame: &mut Frame<'_>, app: &App, area: ratatui::layout::Rect)
                 } else {
                     Style::default()
                 };
-                let bmi = calculate_bmi(record.weight_kg);
+                let bmi = calculate_bmi(record.weight_kg, app.profile.height_cm);
                 Line::from(vec![
                     Span::styled(
                         format!(
@@ -170,7 +170,7 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(format!("range: {} to {}", analysis.start, analysis.end)),
         Line::from(format!("data: {}", analysis.data_status.label())),
         trend_line(analysis.trend_kg_per_week, analysis.trend_class),
-        short_term_average_line(&analysis),
+        short_term_average_line(&analysis, app.profile.height_cm),
         Line::from(""),
     ];
     lines.extend(tdee_summary_lines(app));
@@ -202,7 +202,7 @@ fn compare_lines(app: &App) -> Vec<Line<'static>> {
                     "baseline: {}   {}   {}   {} record(s)",
                     result.comparison.recent_average.label,
                     format_average(&result.comparison.recent_average),
-                    format_bmi(bmi_for_average(result.comparison.recent_average.average_kg)),
+                    format_bmi(bmi_for_average(result.comparison.recent_average.average_kg, app.profile.height_cm)),
                     result.comparison.recent_average.sample_count
                 )),
                 Line::from(""),
@@ -211,13 +211,13 @@ fn compare_lines(app: &App) -> Vec<Line<'static>> {
                     title_style(),
                 ),
             ];
-            lines.extend(result.comparison.points.iter().map(compare_point_line));
+            lines.extend(result.comparison.points.iter().map(|p| compare_point_line(p, app.profile.height_cm)));
             lines
         }
     }
 }
 
-fn compare_point_line(point: &ComparisonPoint) -> Line<'static> {
+fn compare_point_line(point: &ComparisonPoint, height_cm: f64) -> Line<'static> {
     let mut spans = vec![
         Span::raw(format!("{:<13} ", point.label)),
         Span::styled(
@@ -225,7 +225,7 @@ fn compare_point_line(point: &ComparisonPoint) -> Line<'static> {
             optional_value_style(point.average_kg),
         ),
     ];
-    spans.extend(bmi_spans(bmi_for_average(point.average_kg), BMI_CELL_WIDTH));
+    spans.extend(bmi_spans(bmi_for_average(point.average_kg, height_cm), BMI_CELL_WIDTH));
     spans.extend([
         Span::styled(
             format!("{:<12} ", format_delta(point.delta_from_recent_kg)),
@@ -264,7 +264,7 @@ fn advice_lines(app: &App) -> Vec<Line<'static>> {
                     ),
                 ]),
                 trend_line(analysis.trend_kg_per_week, analysis.trend_class),
-                short_term_average_line(analysis),
+                short_term_average_line(analysis, app.profile.height_cm),
                 Line::from(""),
                 Line::styled("Interpretation", title_style()),
                 Line::from(advice.interpretation.to_string()),
@@ -329,7 +329,7 @@ fn target_lines(app: &App) -> Vec<Line<'static>> {
                     analysis.data_status.label()
                 )),
                 trend_line(analysis.trend_kg_per_week, analysis.trend_class),
-                short_term_average_line(analysis),
+                short_term_average_line(analysis, app.profile.height_cm),
                 Line::from(""),
                 Line::styled("Projection", title_style()),
                 Line::from(format!(
@@ -432,7 +432,7 @@ fn fat_loss_nutrition_summary_lines(app: &App, analysis: &TrendAnalysis) -> Vec<
         return lines;
     };
 
-    let targets = build_default_fat_loss_nutrition_targets(basis.weight_kg);
+    let targets = build_default_fat_loss_nutrition_targets(basis.weight_kg, &app.profile.fat_loss_training_band);
     lines.extend([
         Line::from(format!(
             "basis: {} {:.2} kg   training: {}/week",
@@ -676,7 +676,7 @@ fn trend_line(value: Option<f64>, class: Option<TrendClass>) -> Line<'static> {
     ])
 }
 
-fn short_term_average_line(analysis: &TrendAnalysis) -> Line<'static> {
+fn short_term_average_line(analysis: &TrendAnalysis, height_cm: f64) -> Line<'static> {
     let mut spans = vec![
         Span::raw("7-day average: "),
         Span::styled(
@@ -689,7 +689,7 @@ fn short_term_average_line(analysis: &TrendAnalysis) -> Line<'static> {
         )),
     ];
     spans.extend(bmi_spans(
-        bmi_for_average(analysis.short_term_average.average_kg),
+        bmi_for_average(analysis.short_term_average.average_kg, height_cm),
         0,
     ));
     Line::from(spans)
@@ -1620,7 +1620,7 @@ mod tests {
         ];
         let mut app = App::new_with_date(reference_date);
         app.tdee = LoadState::Ready(TdeeResult {
-            estimate: build_tdee_estimate(&records, reference_date),
+            estimate: build_tdee_estimate(&records, reference_date, &Default::default()),
         });
 
         let output = render_to_text(&app, 120, 34);
@@ -1640,7 +1640,7 @@ mod tests {
         let reference_date = date("2026-05-25");
         let mut app = App::new_with_date(reference_date);
         app.tdee = LoadState::Ready(TdeeResult {
-            estimate: build_tdee_estimate(&[record(reference_date, 72.0)], reference_date),
+            estimate: build_tdee_estimate(&[record(reference_date, 72.0)], reference_date, &Default::default()),
         });
 
         let low_sample = render_to_text(&app, 120, 34);
@@ -1648,7 +1648,7 @@ mod tests {
         assert!(low_sample.contains("estimate:"));
 
         app.tdee = LoadState::Ready(TdeeResult {
-            estimate: build_tdee_estimate(&[], reference_date),
+            estimate: build_tdee_estimate(&[], reference_date, &Default::default()),
         });
         let no_data = render_to_text(&app, 120, 34);
         assert!(no_data.contains("data: no data"));
