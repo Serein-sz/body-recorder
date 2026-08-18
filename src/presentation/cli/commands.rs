@@ -6,6 +6,7 @@ use crate::error::AppResult;
 use crate::presentation::cli::args::{Cli, Commands};
 use crate::presentation::cli::output;
 use crate::presentation::tui;
+use crate::presentation::rest;
 use crate::storage::config::{init_config, read_config};
 use crate::storage::supabase::SupabaseClient;
 use clap::Parser;
@@ -111,6 +112,9 @@ pub async fn run() -> AppResult<()> {
         Commands::Tui => {
             let repository = SupabaseClient::from_config_file()?;
             tui::run(&repository).await
+        }
+        Commands::Rest { port } => {
+            rest::run(port).await
         }
     }
 }

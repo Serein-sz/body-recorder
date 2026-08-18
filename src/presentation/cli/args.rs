@@ -88,6 +88,10 @@ pub enum Commands {
     },
     /// Open the interactive terminal interface.
     Tui,
+    Rest {
+        #[arg(long, default_value_t = 37001)]
+        port: u16
+    }
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
